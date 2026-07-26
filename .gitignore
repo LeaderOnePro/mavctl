@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+*.egg
+
+# Virtual envs / uv
+.venv/
+venv/
+uv.lock.bak
+
+# Tooling caches
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# mavctl runtime state
+.mavctl/
+
+# OS / editor
+.DS_Store
+*.swp
+.idea/
+.vscode/
