@@ -8,6 +8,7 @@ reads of that snapshot.
 
 from __future__ import annotations
 
+import contextlib
 import math
 import threading
 import time
@@ -106,7 +107,7 @@ class PymavlinkAdapter:
                 self._connection_string,
                 source_system=self._source_system,
             )
-        except Exception as exc:  # noqa: BLE001 - surface any transport failure uniformly
+        except Exception as exc:
             raise ConnectionLostError(
                 f"could not open link {self._connection_string!r}: {exc}"
             ) from exc
@@ -128,10 +129,8 @@ class PymavlinkAdapter:
             reader.join(timeout=3.0)
         self._reader = None
         if self._master is not None:
-            try:
+            with contextlib.suppress(Exception):
                 self._master.close()
-            except Exception:  # noqa: BLE001 - close is best-effort
-                pass
             self._master = None
 
     # -- snapshot reads ----------------------------------------------------
@@ -176,7 +175,7 @@ class PymavlinkAdapter:
         while not self._stop.is_set():
             try:
                 msg = master.recv_match(type=list(_SUBSCRIBED), blocking=True, timeout=1.0)
-            except Exception:  # noqa: BLE001 - a transport hiccup should not kill the loop
+            except Exception:
                 time.sleep(0.1)
                 continue
             if msg is None:
@@ -211,7 +210,7 @@ class PymavlinkAdapter:
                 mode = master.flightmode
                 if isinstance(mode, str):
                     return mode
-            except Exception:  # noqa: BLE001 - fall back to raw mode number
+            except Exception:
                 pass
         return f"mode({msg.custom_mode})"
 

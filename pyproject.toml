@@ -11,7 +11,7 @@ dependencies = [
 ]
 
 [project.scripts]
-mavctl = "mavctl.cli.main:main"
+mavctl = "mavctl.cli.app:main"
 
 [dependency-groups]
 dev = [
