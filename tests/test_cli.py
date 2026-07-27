@@ -97,3 +97,80 @@ def test_daemon_status_running(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_missing_required_connect_is_usage_error() -> None:
     result = runner.invoke(app, ["daemon", "start"])
     assert result.exit_code == ExitCode.USAGE_ERROR
+
+
+# -- flight-control commands ------------------------------------------------
+
+
+def test_arm_passes_params_and_formats(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_call(method: str, params=None, timeout: float = 5.0):  # type: ignore[no-untyped-def]
+        captured["method"] = method
+        captured["params"] = params
+        return DaemonResponse.success(
+            {"action": "arm", "executed": True, "outcome": {"result_name": "ACCEPTED"}}
+        )
+
+    monkeypatch.setattr(_CALL_DAEMON, fake_call)
+    result = runner.invoke(app, ["arm", "--confirm"])
+
+    assert result.exit_code == ExitCode.SUCCESS
+    assert captured["method"] == "arm"
+    assert captured["params"] == {"confirm": True, "force": False, "dry_run": False}
+    assert "ACCEPTED" in result.stdout
+
+
+def test_arm_guard_rejection_exit_5_with_hint(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        _CALL_DAEMON,
+        lambda *a, **k: DaemonResponse.failure(
+            ExitCode.SAFETY_REJECTED,
+            "arm requires explicit confirmation",
+            {"reason": "confirmation_required", "hint": "re-run with --confirm"},
+        ),
+    )
+    result = runner.invoke(app, ["arm"])
+    assert result.exit_code == ExitCode.SAFETY_REJECTED
+
+
+def test_takeoff_guard_rejection_maps_exit_code(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        _CALL_DAEMON,
+        lambda *a, **k: DaemonResponse.failure(
+            ExitCode.SAFETY_REJECTED, "takeoff requires GUIDED", {"reason": "wrong_mode"}
+        ),
+    )
+    result = runner.invoke(app, ["takeoff", "--alt", "10", "--confirm"])
+    assert result.exit_code == ExitCode.SAFETY_REJECTED
+
+
+def test_mode_dry_run_json(monkeypatch: pytest.MonkeyPatch) -> None:
+    payload = {
+        "dry_run": True,
+        "action": "mode",
+        "would_execute": True,
+        "already_satisfied": False,
+        "checks": [{"name": "confirm", "passed": True, "detail": "confirmed"}],
+    }
+    monkeypatch.setattr(_CALL_DAEMON, lambda *a, **k: DaemonResponse.success(payload))
+    result = runner.invoke(app, ["mode", "LOITER", "--confirm", "--dry-run", "--json"])
+
+    assert result.exit_code == ExitCode.SUCCESS
+    assert json.loads(result.stdout)["would_execute"] is True
+
+
+def test_takeoff_requires_alt_option() -> None:
+    result = runner.invoke(app, ["takeoff", "--confirm"])
+    assert result.exit_code == ExitCode.USAGE_ERROR
+
+
+def test_nack_maps_exit_6(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        _CALL_DAEMON,
+        lambda *a, **k: DaemonResponse.failure(
+            ExitCode.NACK_TIMEOUT, "arm not accepted by vehicle: FAILED", {}
+        ),
+    )
+    result = runner.invoke(app, ["arm", "--confirm"])
+    assert result.exit_code == ExitCode.NACK_TIMEOUT
