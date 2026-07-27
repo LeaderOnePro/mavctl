@@ -134,7 +134,13 @@ uv run mavctl land --confirm --wait --timeout 90 ; echo "exit=$?"
 | 超高度上限 | `mavctl takeoff --alt 999 --confirm` | 5 | altitude_limit |
 | 非法高度 | `mavctl takeoff --alt 0 --confirm` | 2 | invalid_altitude |
 | 未知模式 | `mavctl mode WARP --confirm` | 2 | unknown_mode |
-| 空中 disarm | 起飞后 `mavctl disarm --confirm`（非 landed） | 5 | in_flight |
+| 空中 disarm | 起飞后 `mavctl disarm --confirm`（非 landed） | 5 或 6 | in_flight（见下注） |
+
+> **空中 disarm 说明**：一旦确实离地（`rel_alt` > 1m），护栏以 `in_flight`
+> 拒绝，退出码 **5**。但在 takeoff 后约 1 秒的过渡窗口内（`rel_alt` 尚未
+> 超过阈值），护栏会放行，转由**飞控自身 NACK**（`FAILED`）拦截，退出码
+> **6**。两种情况都安全地阻止了空中上锁。`--force` 可越过护栏（危险，会真的
+> 停桨坠机，勿在空中使用）。
 
 验证几条：
 
