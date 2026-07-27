@@ -71,6 +71,7 @@ def _server(
 ) -> DaemonServer:
     state = VehicleState(
         connected=connected,
+        heartbeat_age_s=0.2 if connected else None,
         flight_mode=mode,
         armed=armed,
         relative_alt_m=rel_alt,

@@ -140,8 +140,6 @@ class DaemonServer:
     async def _m_arm(self, request: RpcRequest) -> DaemonResponse:
         p = request.params
         state = self._adapter.get_state()
-        if not state.connected:
-            return self._not_connected()
         decision = guards.check_arm(state, confirm=_flag(p, "confirm"), config=self._guard_config)
         pre = self._pre_execute(decision, dry_run=_flag(p, "dry_run"))
         if pre is not None:
@@ -152,8 +150,6 @@ class DaemonServer:
     async def _m_disarm(self, request: RpcRequest) -> DaemonResponse:
         p = request.params
         state = self._adapter.get_state()
-        if not state.connected:
-            return self._not_connected()
         decision = guards.check_disarm(
             state, confirm=_flag(p, "confirm"), force=_flag(p, "force"), config=self._guard_config
         )
@@ -167,10 +163,12 @@ class DaemonServer:
         p = request.params
         mode = str(p.get("mode", "")).upper()
         state = self._adapter.get_state()
-        if not state.connected:
-            return self._not_connected()
         decision = guards.check_mode(
-            state, mode, self._adapter.mode_names(), confirm=_flag(p, "confirm")
+            state,
+            mode,
+            self._adapter.mode_names(),
+            confirm=_flag(p, "confirm"),
+            config=self._guard_config,
         )
         pre = self._pre_execute(decision, dry_run=_flag(p, "dry_run"))
         if pre is not None:
@@ -195,8 +193,6 @@ class DaemonServer:
         except (TypeError, ValueError):
             return DaemonResponse.failure(ExitCode.USAGE_ERROR, "takeoff requires numeric --alt")
         state = self._adapter.get_state()
-        if not state.connected:
-            return self._not_connected()
         decision = guards.check_takeoff(
             state, alt, confirm=_flag(p, "confirm"), config=self._guard_config
         )
@@ -225,12 +221,10 @@ class DaemonServer:
     ) -> DaemonResponse:
         p = request.params
         state = self._adapter.get_state()
-        if not state.connected:
-            return self._not_connected()
         decision = (
-            guards.check_land(state, confirm=_flag(p, "confirm"))
+            guards.check_land(state, confirm=_flag(p, "confirm"), config=self._guard_config)
             if action == "land"
-            else guards.check_rtl(state, confirm=_flag(p, "confirm"))
+            else guards.check_rtl(state, confirm=_flag(p, "confirm"), config=self._guard_config)
         )
         pre = self._pre_execute(decision, dry_run=_flag(p, "dry_run"))
         if pre is not None:

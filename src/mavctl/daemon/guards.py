@@ -5,6 +5,11 @@ parameters, returning a :class:`GuardDecision`. The daemon runs the relevant
 guard before touching the adapter; ``--dry-run`` runs the guard and reports
 without executing. Rejections carry a machine-readable ``reason``, a human
 ``message``, and a ``hint`` telling an agent what to do next.
+
+Every guard shares a preamble of two gates, in order:
+  1. confirm      — the command must be explicitly confirmed (exit 5)
+  2. connection   — the link must be up and the heartbeat fresh (exit 4)
+Only then are command-specific preconditions evaluated.
 """
 
 from __future__ import annotations
@@ -16,6 +21,8 @@ from mavctl.models import ExitCode, VehicleState
 # Defaults for precondition thresholds.
 DEFAULT_MAX_TAKEOFF_ALT_M = 120.0
 DEFAULT_MIN_GPS_FIX_TYPE = 3  # 3D fix
+DEFAULT_AIRBORNE_ALT_THRESHOLD_M = 1.0
+DEFAULT_MAX_HEARTBEAT_AGE_S = 3.0
 _GUIDED = "GUIDED"
 
 
@@ -24,6 +31,8 @@ class GuardConfig(BaseModel):
 
     max_takeoff_alt_m: float = DEFAULT_MAX_TAKEOFF_ALT_M
     min_gps_fix_type: int = DEFAULT_MIN_GPS_FIX_TYPE
+    airborne_alt_threshold_m: float = DEFAULT_AIRBORNE_ALT_THRESHOLD_M
+    max_heartbeat_age_s: float = DEFAULT_MAX_HEARTBEAT_AGE_S
 
 
 class GuardCheck(BaseModel):
@@ -78,28 +87,75 @@ def _reject(
     )
 
 
-def _confirm_check(action: str, confirm: bool) -> GuardDecision | None:
-    """Shared first gate: every dangerous command requires ``--confirm``."""
+def _preamble(
+    action: str, state: VehicleState, confirm: bool, config: GuardConfig
+) -> tuple[GuardDecision | None, list[GuardCheck]]:
+    """Run the shared confirm + connection gates.
 
-    if confirm:
-        return None
-    return _reject(
-        action=action,
-        reason="confirmation_required",
-        message=f"{action} is a state-changing command and requires explicit confirmation",
-        hint=f"re-run with --confirm (and --dry-run first to preview): mavctl {action} --confirm",
-        checks=[],
-        failed_check=GuardCheck(name="confirm", passed=False, detail="--confirm not provided"),
-    )
+    Returns ``(terminal_decision, checks)``. If ``terminal_decision`` is not
+    None the caller must return it immediately; otherwise ``checks`` holds the
+    passed preamble checks to extend with command-specific ones.
+    """
+
+    # Gate 1: confirmation.
+    if not confirm:
+        return (
+            _reject(
+                action=action,
+                reason="confirmation_required",
+                message=f"{action} is a state-changing command and requires explicit confirmation",
+                hint=(
+                    f"re-run with --confirm (preview first with --dry-run): "
+                    f"mavctl {action} --confirm"
+                ),
+                checks=[],
+                failed_check=GuardCheck(
+                    name="confirm", passed=False, detail="--confirm not provided"
+                ),
+            ),
+            [],
+        )
+    checks = [_passed("confirm", "confirmed")]
+
+    # Gate 2: connection + heartbeat freshness. ``connected`` already encodes
+    # "heartbeat age <= adapter timeout"; we additionally reject a stale or
+    # missing heartbeat defensively so a guard never runs on phantom state.
+    age = state.heartbeat_age_s
+    fresh = state.connected and age is not None and age <= config.max_heartbeat_age_s
+    if not fresh:
+        age_text = "never" if age is None else f"{age:.1f}s"
+        return (
+            _reject(
+                action=action,
+                reason="not_connected",
+                message=(
+                    f"vehicle not connected or heartbeat stale "
+                    f"(last heartbeat: {age_text} ago)"
+                ),
+                hint="ensure the vehicle link is up before commanding (check: mavctl status)",
+                checks=checks,
+                failed_check=GuardCheck(
+                    name="connected",
+                    passed=False,
+                    detail=f"connected={state.connected} heartbeat_age={age_text}",
+                ),
+                exit_code=ExitCode.VEHICLE_NOT_CONNECTED,
+            ),
+            checks,
+        )
+    checks.append(_passed("connected", f"heartbeat {age:.1f}s ago"))
+    return None, checks
 
 
 def check_arm(state: VehicleState, *, confirm: bool, config: GuardConfig) -> GuardDecision:
     action = "arm"
-    gate = _confirm_check(action, confirm)
-    if gate is not None:
-        return gate
-    checks = [_passed("confirm", "confirmed")]
+    terminal, checks = _preamble(action, state, confirm, config)
+    if terminal is not None:
+        return terminal
 
+    # Idempotency: only short-circuit on a *known* armed state. armed is None
+    # (unknown) falls through to the checks below — the safe direction, since
+    # we then re-verify preconditions rather than assume already-armed.
     if state.armed:
         return GuardDecision(
             allowed=True,
@@ -132,11 +188,14 @@ def check_disarm(
     state: VehicleState, *, confirm: bool, force: bool, config: GuardConfig
 ) -> GuardDecision:
     action = "disarm"
-    gate = _confirm_check(action, confirm)
-    if gate is not None:
-        return gate
-    checks = [_passed("confirm", "confirmed")]
+    terminal, checks = _preamble(action, state, confirm, config)
+    if terminal is not None:
+        return terminal
 
+    # Only treat an explicit ``False`` as already-disarmed. armed is None
+    # (unknown) is NOT treated as satisfied: we proceed to send disarm, which
+    # is the safe direction (disarming is a make-safe action; a truly airborne
+    # disarm is still caught below or NACKed by the autopilot).
     if state.armed is False:
         return GuardDecision(
             allowed=True,
@@ -147,7 +206,8 @@ def check_disarm(
         )
 
     airborne = state.landed_state == "in_air" or (
-        state.relative_alt_m is not None and state.relative_alt_m > 1.0
+        state.relative_alt_m is not None
+        and state.relative_alt_m > config.airborne_alt_threshold_m
     )
     if airborne and not force:
         return _reject(
@@ -169,16 +229,22 @@ def check_disarm(
 
 
 def check_mode(
-    state: VehicleState, mode: str, available: list[str], *, confirm: bool
+    state: VehicleState, mode: str, available: list[str], *, confirm: bool, config: GuardConfig
 ) -> GuardDecision:
     action = "mode"
-    gate = _confirm_check(action, confirm)
-    if gate is not None:
-        return gate
-    checks = [_passed("confirm", "confirmed")]
+    terminal, checks = _preamble(action, state, confirm, config)
+    if terminal is not None:
+        return terminal
     target = mode.upper()
 
-    if available and target not in available:
+    if not available:
+        # Connected but the mode map has not populated yet (transient). We
+        # cannot validate the mode name; record the degraded state explicitly
+        # rather than passing silently, and let the autopilot reject if wrong.
+        checks.append(
+            _passed("mode_known", "mode list unavailable, validation skipped (degraded)")
+        )
+    elif target not in available:
         return _reject(
             action=action,
             reason="unknown_mode",
@@ -190,7 +256,8 @@ def check_mode(
             ),
             exit_code=ExitCode.USAGE_ERROR,
         )
-    checks.append(_passed("mode_known", f"{target} is available"))
+    else:
+        checks.append(_passed("mode_known", f"{target} is available"))
 
     if state.flight_mode == target:
         return GuardDecision(
@@ -207,10 +274,9 @@ def check_takeoff(
     state: VehicleState, altitude_m: float, *, confirm: bool, config: GuardConfig
 ) -> GuardDecision:
     action = "takeoff"
-    gate = _confirm_check(action, confirm)
-    if gate is not None:
-        return gate
-    checks = [_passed("confirm", "confirmed")]
+    terminal, checks = _preamble(action, state, confirm, config)
+    if terminal is not None:
+        return terminal
 
     if altitude_m <= 0:
         return _reject(
@@ -251,7 +317,9 @@ def check_takeoff(
         )
     checks.append(_passed("mode_guided", f"mode={state.flight_mode}"))
 
-    if not state.armed:
+    # Require a *known* armed=True. armed None (unknown) or False both reject:
+    # we never launch unless arming is positively confirmed — the safe side.
+    if state.armed is not True:
         return _reject(
             action=action,
             reason="not_armed",
@@ -264,13 +332,14 @@ def check_takeoff(
     return GuardDecision(allowed=True, action=action, checks=checks)
 
 
-def check_land(state: VehicleState, *, confirm: bool) -> GuardDecision:
+def check_land(state: VehicleState, *, confirm: bool, config: GuardConfig) -> GuardDecision:
     action = "land"
-    gate = _confirm_check(action, confirm)
-    if gate is not None:
-        return gate
-    checks = [_passed("confirm", "confirmed")]
+    terminal, checks = _preamble(action, state, confirm, config)
+    if terminal is not None:
+        return terminal
 
+    # Only an explicit disarmed/on-ground state is treated as already-landed;
+    # armed None (unknown) falls through and lands, which is the safe side.
     if state.armed is False or state.landed_state == "on_ground":
         return GuardDecision(
             allowed=True,
@@ -282,13 +351,14 @@ def check_land(state: VehicleState, *, confirm: bool) -> GuardDecision:
     return GuardDecision(allowed=True, action=action, checks=checks)
 
 
-def check_rtl(state: VehicleState, *, confirm: bool) -> GuardDecision:
+def check_rtl(state: VehicleState, *, confirm: bool, config: GuardConfig) -> GuardDecision:
     action = "rtl"
-    gate = _confirm_check(action, confirm)
-    if gate is not None:
-        return gate
-    checks = [_passed("confirm", "confirmed")]
+    terminal, checks = _preamble(action, state, confirm, config)
+    if terminal is not None:
+        return terminal
 
+    # As with land: only an explicit on-ground/disarmed state short-circuits;
+    # armed None (unknown) proceeds to command RTL (safe side).
     if state.armed is False or state.landed_state == "on_ground":
         return GuardDecision(
             allowed=True,
