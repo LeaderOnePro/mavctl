@@ -22,15 +22,42 @@ daemon_app = typer.Typer(help="Manage the mavctl daemon process.", no_args_is_he
 app.add_typer(daemon_app, name="daemon")
 
 JsonOption = Annotated[bool, typer.Option("--json", help="Emit structured JSON to stdout.")]
+ConfirmOption = Annotated[
+    bool, typer.Option("--confirm", help="Confirm this state-changing command (required).")
+]
+DryRunOption = Annotated[
+    bool, typer.Option("--dry-run", help="Run safety checks and report without executing.")
+]
+ForceOption = Annotated[bool, typer.Option("--force", help="Override safety checks (DANGEROUS).")]
+WaitOption = Annotated[
+    bool, typer.Option("--wait", help="Block until the target state is reached.")
+]
+TimeoutOption = Annotated[
+    float, typer.Option("--timeout", help="Seconds to wait when --wait is set (default 60).")
+]
 
 _DAEMON_DOWN_HINT = "daemon is not running; start it with 'mavctl daemon start --connect <conn>'"
 
+# Client socket timeout for quick queries; commands compute their own.
+_QUERY_TIMEOUT = 5.0
+# Buffer added on top of an ACK burst (retries) / a --wait window.
+_COMMAND_BASE_TIMEOUT = 25.0
 
-def _query(method: str, json_mode: bool) -> dict[str, Any]:
+
+def _client_timeout(wait: bool, timeout: float) -> float:
+    return timeout + 30.0 if wait else _COMMAND_BASE_TIMEOUT
+
+
+def _call(
+    method: str,
+    json_mode: bool,
+    params: dict[str, Any] | None = None,
+    timeout: float = _QUERY_TIMEOUT,
+) -> dict[str, Any]:
     """Call a daemon method, mapping failures to the exit-code contract."""
 
     try:
-        response = call_daemon(method)
+        response = call_daemon(method, params, timeout=timeout)
     except DaemonNotRunningError:
         fail(ExitCode.DAEMON_NOT_RUNNING, _DAEMON_DOWN_HINT, json_mode=json_mode)
     except (OSError, ValueError) as exc:
@@ -39,8 +66,13 @@ def _query(method: str, json_mode: bool) -> dict[str, Any]:
     if not response.ok:
         err = response.error
         assert err is not None  # ok is False -> error is populated
-        fail(err.code, err.message, json_mode=json_mode, detail=err.detail)
+        message = err.message
+        hint = err.detail.get("hint")
+        if hint and not json_mode:
+            message = f"{message}\nhint: {hint}"
+        fail(err.code, message, json_mode=json_mode, detail=err.detail)
     return response.result or {}
+
 
 
 # -- daemon subcommands ----------------------------------------------------
@@ -118,7 +150,7 @@ def daemon_status(json_mode: JsonOption = False) -> None:
 def status(json_mode: JsonOption = False) -> None:
     """Show vehicle connection status, flight mode, arming, power, GPS."""
 
-    state = _query("status", json_mode)
+    state = _call("status", json_mode)
     emit_success(state, json_mode=json_mode, human=_format_state(state))
 
 
@@ -126,8 +158,134 @@ def status(json_mode: JsonOption = False) -> None:
 def telemetry(json_mode: JsonOption = False) -> None:
     """Show a position / attitude / velocity snapshot."""
 
-    snapshot = _query("telemetry", json_mode)
+    snapshot = _call("telemetry", json_mode)
     emit_success(snapshot, json_mode=json_mode, human=_format_telemetry(snapshot))
+
+
+# -- flight-control commands -----------------------------------------------
+
+
+@app.command("arm")
+def arm(
+    confirm: ConfirmOption = False,
+    force: ForceOption = False,
+    dry_run: DryRunOption = False,
+    json_mode: JsonOption = False,
+) -> None:
+    """Arm the vehicle (requires --confirm)."""
+
+    result = _call(
+        "arm",
+        json_mode,
+        {"confirm": confirm, "force": force, "dry_run": dry_run},
+        timeout=_COMMAND_BASE_TIMEOUT,
+    )
+    emit_success(result, json_mode=json_mode, human=_format_command(result))
+
+
+@app.command("disarm")
+def disarm(
+    confirm: ConfirmOption = False,
+    force: ForceOption = False,
+    dry_run: DryRunOption = False,
+    json_mode: JsonOption = False,
+) -> None:
+    """Disarm the vehicle (requires --confirm; --force to override in-flight)."""
+
+    result = _call(
+        "disarm",
+        json_mode,
+        {"confirm": confirm, "force": force, "dry_run": dry_run},
+        timeout=_COMMAND_BASE_TIMEOUT,
+    )
+    emit_success(result, json_mode=json_mode, human=_format_command(result))
+
+
+@app.command("mode")
+def mode(
+    mode_name: Annotated[
+        str, typer.Argument(metavar="MODE", help="Target flight mode, e.g. GUIDED")
+    ],
+    confirm: ConfirmOption = False,
+    wait: WaitOption = False,
+    timeout: TimeoutOption = 60.0,
+    dry_run: DryRunOption = False,
+    json_mode: JsonOption = False,
+) -> None:
+    """Switch flight mode (requires --confirm)."""
+
+    result = _call(
+        "mode",
+        json_mode,
+        {
+            "mode": mode_name,
+            "confirm": confirm,
+            "wait": wait,
+            "timeout": timeout,
+            "dry_run": dry_run,
+        },
+        timeout=_client_timeout(wait, timeout),
+    )
+    emit_success(result, json_mode=json_mode, human=_format_command(result))
+
+
+@app.command("takeoff")
+def takeoff(
+    alt: Annotated[float, typer.Option("--alt", help="Target relative altitude in metres.")],
+    confirm: ConfirmOption = False,
+    wait: WaitOption = False,
+    timeout: TimeoutOption = 60.0,
+    dry_run: DryRunOption = False,
+    json_mode: JsonOption = False,
+) -> None:
+    """Take off to a target altitude (requires --confirm; GUIDED + armed)."""
+
+    result = _call(
+        "takeoff",
+        json_mode,
+        {"alt": alt, "confirm": confirm, "wait": wait, "timeout": timeout, "dry_run": dry_run},
+        timeout=_client_timeout(wait, timeout),
+    )
+    emit_success(result, json_mode=json_mode, human=_format_command(result))
+
+
+@app.command("land")
+def land(
+    confirm: ConfirmOption = False,
+    wait: WaitOption = False,
+    timeout: TimeoutOption = 60.0,
+    dry_run: DryRunOption = False,
+    json_mode: JsonOption = False,
+) -> None:
+    """Land at the current position (requires --confirm)."""
+
+    result = _call(
+        "land",
+        json_mode,
+        {"confirm": confirm, "wait": wait, "timeout": timeout, "dry_run": dry_run},
+        timeout=_client_timeout(wait, timeout),
+    )
+    emit_success(result, json_mode=json_mode, human=_format_command(result))
+
+
+@app.command("rtl")
+def rtl(
+    confirm: ConfirmOption = False,
+    wait: WaitOption = False,
+    timeout: TimeoutOption = 60.0,
+    dry_run: DryRunOption = False,
+    json_mode: JsonOption = False,
+) -> None:
+    """Return to launch (requires --confirm)."""
+
+    result = _call(
+        "rtl",
+        json_mode,
+        {"confirm": confirm, "wait": wait, "timeout": timeout, "dry_run": dry_run},
+        timeout=_client_timeout(wait, timeout),
+    )
+    emit_success(result, json_mode=json_mode, human=_format_command(result))
+
 
 
 # -- human formatters ------------------------------------------------------
@@ -152,13 +310,46 @@ def _format_state(s: dict[str, Any]) -> str:
         f"  sys={_fmt(s.get('system_id'))} comp={_fmt(s.get('component_id'))}",
         f"mode       : {s.get('flight_mode') or 'n/a'}",
         f"armed      : {'ARMED' if s.get('armed') else 'disarmed' if connected else 'n/a'}",
+        f"status     : {s.get('system_status') or 'n/a'}"
+        f"  landed={s.get('landed_state') or 'n/a'}"
+        f"  rel_alt={_fmt(s.get('relative_alt_m'), ' m')}",
         f"battery    : {_fmt(battery.get('voltage_v'), ' V')}"
         f"  {_fmt(battery.get('current_a'), ' A')}"
         f"  {_fmt(battery.get('remaining_pct'), ' %', nd=0)}",
         f"gps        : {gps.get('fix_label') or 'n/a'}"
         f"  sats={_fmt(gps.get('satellites_visible'))}",
     ]
+    home = s.get("home_position")
+    if home:
+        lines.append(
+            f"home       : lat={_fmt(home.get('lat_deg'), nd=7)}"
+            f"  lon={_fmt(home.get('lon_deg'), nd=7)}"
+            f"  alt_msl={_fmt(home.get('alt_msl_m'), ' m')}"
+        )
     return "\n".join(lines)
+
+
+def _format_command(r: dict[str, Any]) -> str:
+    action = r.get("action", "command")
+    if r.get("dry_run"):
+        verdict = "WOULD EXECUTE" if r.get("would_execute") else "no-op (already satisfied)"
+        lines = [f"[dry-run] {action}: {verdict}"]
+        if r.get("note"):
+            lines.append(f"  note: {r.get('note')}")
+        for c in r.get("checks", []):
+            mark = "PASS" if c.get("passed") else "FAIL"
+            lines.append(f"  [{mark}] {c.get('name')}: {c.get('detail')}")
+        return "\n".join(lines)
+    if r.get("already_satisfied"):
+        return f"{action}: already satisfied ({r.get('note')}) — no action taken"
+    outcome = r.get("outcome") or {}
+    parts = [f"{action}: {outcome.get('result_name', 'OK')}"]
+    if r.get("waited") is True:
+        parts.append("(target state reached)")
+    if r.get("note"):
+        parts.append(f"— note: {r.get('note')}")
+    return " ".join(parts)
+
 
 
 def _format_telemetry(t: dict[str, Any]) -> str:
