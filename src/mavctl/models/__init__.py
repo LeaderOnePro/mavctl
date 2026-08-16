@@ -4,7 +4,7 @@ This package is a leaf dependency: it must not import from ``cli``, ``daemon``,
 or ``adapter``.
 """
 
-from mavctl.models.commands import MAV_RESULT_NAMES, CommandOutcome
+from mavctl.models.commands import MAV_RESULT_NAMES, CommandOutcome, WaitStatus
 from mavctl.models.protocol import (
     DaemonResponse,
     ExitCode,
@@ -29,4 +29,5 @@ __all__ = [
     "Telemetry",
     "VehicleState",
     "Velocity",
+    "WaitStatus",
 ]

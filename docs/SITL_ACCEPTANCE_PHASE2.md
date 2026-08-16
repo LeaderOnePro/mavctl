@@ -163,17 +163,112 @@ uv run mavctl takeoff --alt 10 --confirm --wait --timeout 1 ; echo "exit=$?"
 # 若 1s 内未到目标高度：exit=6，message 说明「accepted but did not complete within 1s」
 ```
 
+### MAV_RESULT_IN_PROGRESS 语义
+
+飞控对 `COMMAND_LONG` 可能先回 `MAV_RESULT_IN_PROGRESS`（5），表示**已接受、仍在执行**，
+**不是** NACK。mavctl 将其与 `ACCEPTED`(0) 同等对待为 `outcome.accepted=true`：
+
+- 默认模式：确认 ACK（含 IN_PROGRESS）后立即返回 exit 0，`result_name` 保留真实值
+  （`IN_PROGRESS` 或 `ACCEPTED`）
+- `--wait`：继续轮询目标状态；达成后 exit 0
+- 真正的拒绝（`DENIED` / `FAILED` / `UNSUPPORTED` 等）仍为 exit 6
+
+单测覆盖：`tests/test_adapter.py::test_command_in_progress_counts_as_accepted`、
+`tests/test_server.py::test_in_progress_*`。
+
+## 8b. --wait 中途失链（退出码 4，不是 6）
+
+命令已被飞控 ACK 之后，若在 `--wait` 轮询期间心跳过期 / 链路断开，daemon 必须
+**立即终止等待**并返回 **exit 4**（`VEHICLE_NOT_CONNECTED`），而不是把它当成
+`--wait` 超时的 exit 6。错误 detail 含：
+
+- `reason`: `link_lost_during_wait`
+- `outcome`: 已收到的 COMMAND_ACK（证明命令侧已接受）
+- message 说明：command was accepted but the link was lost during --wait
+
+手动触发思路（SITL 侧可直接 kill 掉链路，或拔掉 `--out`）：
+
+```bash
+uv run mavctl takeoff --alt 10 --confirm --wait --timeout 60 &
+# 在等待爬升时停止 SITL 或断开 udp 转发
+# 预期：exit=4，JSON detail.reason == "link_lost_during_wait"（不是 exit=6）
+```
+
+单测：`tests/test_server.py::test_wait_link_loss_returns_exit_4_not_timeout`。
+
+## 8c. 危险命令并发被安全串行化
+
+状态变更命令在两层锁下串行执行，避免 TOCTOU 与 ACK 错归属：
+
+1. **Adapter**：`_command_lock` 把「发送 COMMAND_LONG → 等 ACK → 重试」做成
+   不可并发事务；`get_state` / `get_telemetry` **不**持该锁。
+2. **Daemon**：`asyncio.Lock` 把「读最新 state → guard → dry-run/幂等 →
+   adapter 调用 → `--wait`」包成一条事务。起飞/降落的 `--wait` 期间也不会
+   插入另一条 arm/mode/rtl 等危险命令。
+3. **status / telemetry** 始终可并发返回（不抢 command lock）。
+
+行为预期：
+
+- 同时发起 `arm` 与 `disarm`（二者共享 `MAV_CMD_COMPONENT_ARM_DISARM`）：
+  按到达顺序串行完成，不会交叉消费对方的 `COMMAND_ACK`
+- 两条同类命令（两个 `arm`）同样串行
+- 一条命令卡在 `--wait` 时，另一条危险命令排队；`mavctl status` 仍立即返回
+
+单测：
+
+- `tests/test_adapter.py::test_concurrent_arm_and_disarm_are_serialized_no_cross_ack`
+- `tests/test_adapter.py::test_concurrent_same_command_are_serialized`
+- `tests/test_adapter.py::test_second_command_cannot_consume_first_ack`
+- `tests/test_server.py::test_command_lock_serializes_and_status_stays_live`
+- `tests/test_server.py::test_status_stays_live_during_wait_and_second_command_blocks`
+
+## 8d. COMMAND_ACK 相关协议限制与迟到 ACK 策略
+
+### MAVLink 限制（无法完美解决）
+
+`COMMAND_ACK` 通常只携带 **command id** 与 **result**，**不**携带 confirmation
+计数或 param1。因此：
+
+- `arm` 与 `disarm` 共享 `MAV_CMD_COMPONENT_ARM_DISARM`，无法在 ACK 上区分二者；
+- 若一次命令事务**整轮重试超时**后，迟到的 ACK 在「下一次同 command id 发送」
+  之后到达，理论上可能被误匹配。
+
+mavctl **不声称**能完美 correlation 每一次 ACK。
+
+### 风险降低措施（策略 A：settle / quarantine window）
+
+在 adapter 层实现可配置安静窗口 `command_ack_settle_s`（默认 1.0s）：
+
+1. 某 command id 在完整超时后，进入 quarantine：该窗口内到达的 ACK **丢弃**，
+   不写入 rendezvous map；
+2. 下一次同 command id 的发送会先**等待 quarantine 结束**，再清 stale map 并发送；
+3. 事务成功拿到 ACK 时清除该 id 的 quarantine。
+
+这与 command lock、事务起始 stale-ACK clear、仅接受已锁定 autopilot 的 ACK
+叠加使用，降低并发与迟到 ACK 风险，但**不是**完美协议层 correlation。
+
+Agent 侧仍建议：危险命令后用 `mavctl status` 轮询确认 `armed` / `mode` /
+`relative_alt` 等真实状态（幂等友好）。
+
+单测：`tests/test_adapter.py::test_late_ack_after_timeout_dropped_during_quarantine`。
+
+### 来源锁定
+
+- 首个 `MAV_COMP_ID_AUTOPILOT1` HEARTBEAT 之前：**拒绝所有 COMMAND_ACK**（含默认 1/1）；
+- 锁定后：仅该 system+component 的 HEARTBEAT / SYS_STATUS / GPS / 位置 / 姿态 /
+  EXTENDED_SYS_STATE / HOME_POSITION / COMMAND_ACK 可更新快照或满足命令。
+
 ## 9. 退出码总表
 
 | 退出码 | 含义 |
 | ------ | ---- |
-| 0 | 成功（含幂等 no-op、dry-run 通过） |
+| 0 | 成功（含幂等 no-op、dry-run 通过、IN_PROGRESS 已接受） |
 | 1 | 通用错误 |
 | 2 | 参数错误（非法高度、未知模式、缺少必填项） |
 | 3 | daemon 未运行 |
-| 4 | 飞控未连接 |
+| 4 | 飞控未连接（含 --wait 中途失链） |
 | 5 | 安全护栏拒绝 |
-| 6 | 飞控 NACK / ACK 超时 / --wait 超时 |
+| 6 | 飞控 NACK / ACK 超时 / --wait 超时（链路仍在） |
 
 ## 10. 收尾
 
