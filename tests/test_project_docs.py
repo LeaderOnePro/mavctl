@@ -1,9 +1,10 @@
 """Consistency tests binding README, packaging metadata and the publish workflow.
 
 These tests keep the public entry documents honest about what mavctl can do
-today: the README must never document commands that do not exist or present
-planned PyPI installation as available, and the publish workflow must refuse
-to publish anything but formal vX.Y.Z release tags.
+today: the README must document only real commands and describe the PyPI
+channel conditionally (never claiming an already-published production release
+or equating TestPyPI rehearsals with one), and the publish workflow must
+refuse anything but formal vX.Y.Z release tags.
 """
 
 from __future__ import annotations
@@ -28,8 +29,16 @@ _UNSUPPORTED_INVOCATION = re.compile(
 )
 _FORCE_ARM_INVOCATION = re.compile(r"mavctl\s+arm\b[^\n]*--force", re.IGNORECASE)
 
-_FUTURE_MARKERS = ("planned", "not available yet", "future")
 _PYPI_INSTALL_COMMANDS = ("uv tool install mavctl", "uvx mavctl", "pipx install mavctl")
+
+
+# A claim that production PyPI already serves mavctl — never allowed, the
+# release is only *prepared* until tag v0.2.0 is pushed and published.
+_PUBLISHED_ON_PYPI_CLAIM = re.compile(
+    r"\b(?:is|are|has\s+been)\s+(?:now\s+)?"
+    r"(?:available|published|released|live)\s+on\s+PyPI\b",
+    re.IGNORECASE,
+)
 
 _FENCE_LINE = re.compile(r"^\s*(`{3,})(.*)$")
 
@@ -101,25 +110,27 @@ def test_readme_quickstart_covers_the_safe_workflow() -> None:
     assert "sitl" in _README.lower()
 
 
-def test_planned_pypi_install_is_clearly_marked_unavailable() -> None:
-    assert re.search(r"PyPI publishing is being prepared", _README, re.IGNORECASE)
-    segments = _prose_and_code(_README)
-    seen_install_command = False
-    for index, (kind, body) in enumerate(segments):
-        if kind != "code" or not any(cmd in body for cmd in _PYPI_INSTALL_COMMANDS):
-            continue
-        seen_install_command = True
-        prior_prose = "\n".join(b for k, b in segments[:index] if k == "prose").lower()
-        assert any(marker in prior_prose for marker in _FUTURE_MARKERS), (
-            f"install command block lacks a planned/not-available marker nearby:\n{body}"
-        )
-    assert seen_install_command, "README must list the planned PyPI install commands"
+def test_readme_documents_the_pypi_install_channels() -> None:
+    for command in _PYPI_INSTALL_COMMANDS:
+        assert command in _README, command
 
 
-def test_readme_still_describes_pypi_install_as_unavailable() -> None:
-    assert "Planned PyPI install (not available yet)" in _README
-    assert "PyPI publishing is being prepared" in _README
-    assert "the package is not published" in _README
+def test_readme_pypi_wording_is_release_aware() -> None:
+    # Instructions are conditional on the actual release…
+    assert re.search(
+        r"after the\s+PyPI release is published", _README, re.IGNORECASE
+    ), "install commands must be gated on the release being published"
+    # …TestPyPI rehearsals must never be presented as production releases…
+    assert re.search(
+        r"rehearsal artifacts are not production releases", _README, re.IGNORECASE
+    )
+    equivalence = re.search(
+        r"TestPyPI[^.\n]*(?:same as|identical to|equals)", _README, re.IGNORECASE
+    )
+    assert equivalence is None, equivalence.group(0) if equivalence else ""
+    # …and no wording may claim mavctl is already served by production PyPI.
+    claim = _PUBLISHED_ON_PYPI_CLAIM.search(_README)
+    assert claim is None, claim.group(0) if claim else ""
 
 
 # -- packaging metadata ------------------------------------------------------
@@ -133,8 +144,8 @@ def test_pyproject_packaging_metadata_is_release_ready_shape() -> None:
     assert metadata_line(r'^name = "mavctl"$')
     assert metadata_line(r'^readme = "README\.md"$')
     assert metadata_line(r'^license = "MIT"$')
-    # Unreleased PEP 440 dev version; plain X.Y.Z lands only in a release commit.
-    assert metadata_line(r'^version = "\d+\.\d+\.\d+\.dev\d+"$')
+    # The formal v0.2.0 release version — plain PEP 440, no dev suffix.
+    assert metadata_line(r'^version = "0\.2\.0"$')
     assert metadata_line(r'^mavctl = "[^"]+"$')
     license_text = (_ROOT / "LICENSE").read_text(encoding="utf-8")
     assert "MIT License" in license_text
@@ -147,6 +158,15 @@ def test_pyproject_packaging_metadata_is_release_ready_shape() -> None:
 def test_publishing_doc_states_production_release_pending() -> None:
     assert "prepared, not yet published" in _PUBLISHING
     assert "has been released on production PyPI" in _PUBLISHING
+
+
+def test_publishing_doc_tracks_pre_v020_release_state() -> None:
+    assert "## Release state before v0.2.0" in _PUBLISHING
+    assert (
+        "tag v0.2.0 has been pushed successfully" in _PUBLISHING
+    ), "the doc must gate publication on the tag actually being pushed"
+    claim = _PUBLISHED_ON_PYPI_CLAIM.search(_PUBLISHING)
+    assert claim is None, claim.group(0) if claim else ""
 
 
 def test_testpypi_rehearsal_is_recorded() -> None:

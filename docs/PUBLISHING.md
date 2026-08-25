@@ -23,20 +23,34 @@ PyPI JSON API returned 404 for `pypi.org/pypi/mavctl/json`).
     equals the package version, so the `.dev0` suffix must be dropped in a
     release commit before tagging.
 
-## First-release checklist
+## Release state before v0.2.0
 
-1. Re-confirm `mavctl` is still free on PyPI.
-2. Land a release commit changing `version = "X.Y.Z"` (no suffix).
-3. Register the PyPI Trusted Publisher (below) — before pushing any tag.
-4. Validate locally: `uv build`, inspect `dist/`, smoke-test the wheel.
-5. Rehearse on TestPyPI (below).
-6. Push the release tag:
-   ```bash
-   git tag vX.Y.Z
-   git push origin vX.Y.Z
-   ```
-7. Watch the GitHub Actions run (`Publish to PyPI`), then verify post-release
-   (below).
+This branch prepares version 0.2.0. Production publication has not happened
+until main contains this version and tag v0.2.0 has been pushed successfully.
+
+## First-release checklist (v0.2.0)
+
+Done:
+
+- Re-confirmed `mavctl` was unoccupied on production PyPI before preparation
+  started.
+- Registered the PyPI Trusted Publisher as a pending publisher (project
+  `mavctl`, owner `LeaderOnePro`, repository `mavctl`, workflow filename
+  `publish.yml`, environment empty).
+- Rehearsed on TestPyPI successfully (see the record below); the rehearsal
+  token was revoked afterwards.
+- Landed the release commit changing `version` to `0.2.0` on the
+  `release/0.2.0` branch and opened the release PR.
+
+Remaining — strictly in this order:
+
+1. Merge the release PR into main.
+2. Only then create and push annotated tag `v0.2.0`
+   (`git tag -a v0.2.0 && git push origin v0.2.0`). The formal tag does not
+   exist yet.
+3. Watch the GitHub Actions run (`Publish to PyPI`) validate tag/version and
+   publish over OIDC.
+4. Verify installation in a clean environment with `uvx mavctl --help`.
 
 ## Trusted Publisher configuration (manual, one-time)
 
