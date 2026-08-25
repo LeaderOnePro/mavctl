@@ -1,14 +1,41 @@
 [project]
 name = "mavctl"
-version = "0.1.0"
-description = "Headless ground control station CLI for MAVLink vehicles (ArduPilot-first)"
-readme = "AGENTS.md"
+# PEP 440 development version: unreleased work toward 0.2.0 (main already
+# carries the phase-2 hardening; 0.1.0 was never published). The v0.2.0-phase2
+# Git milestone tag is NOT a PyPI version; a real release lands a commit with
+# the plain "X.Y.Z" form first (see docs/PUBLISHING.md).
+version = "0.2.0.dev0"
+description = "Headless, agent-first MAVLink ground-control CLI for ArduPilot vehicles"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.10"
+authors = [{ name = "LeaderOnePro" }]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Operating System :: MacOS :: MacOS X",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3 :: Only",
+    "Topic :: Scientific/Engineering",
+    "Topic :: System :: Networking",
+]
 dependencies = [
     "typer>=0.12",
     "pydantic>=2.6",
     "pymavlink>=2.4.40",
 ]
+
+[project.urls]
+Homepage = "https://github.com/LeaderOnePro/mavctl"
+Repository = "https://github.com/LeaderOnePro/mavctl"
+Issues = "https://github.com/LeaderOnePro/mavctl/issues"
+Documentation = "https://github.com/LeaderOnePro/mavctl/tree/main/docs"
 
 [project.scripts]
 mavctl = "mavctl.cli.app:main"

@@ -1,0 +1,78 @@
+name: Publish to PyPI
+
+# Publishing is restricted to formal PEP 440 release tags (vX.Y.Z).
+# Milestone tags such as v0.2.0-phase2 are NEVER published: the broad "v*"
+# trigger exists only so wrong tags fail loudly instead of silently doing
+# nothing; the first step enforces the strict vX.Y.Z pattern.
+#
+# ONE-TIME MANUAL SETUP (required before the first real tag push):
+#   1. On pypi.org, register a Trusted Publisher for this project:
+#        PyPI project name : mavctl
+#        Owner             : LeaderOnePro
+#        Repository        : mavctl
+#        Workflow filename : publish.yml
+#        Environment       : leave empty (no environment is used here);
+#                            if you ever add `environment:` below, the name
+#                            on PyPI must match exactly.
+#   2. Rehearse on TestPyPI first and validate dist/ locally — see
+#      docs/PUBLISHING.md before cutting the first real vX.Y.Z tag.
+#
+# This workflow uses OIDC Trusted Publishing only; it never requires or reads
+# a PyPI token secret.
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write # OIDC identity for PyPI Trusted Publishing
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Enforce PEP 440 release tag (vX.Y.Z)
+        env:
+          RELEASE_TAG_PATTERN: '^v[0-9]+\.[0-9]+\.[0-9]+$'
+        run: |
+          if [[ ! "${GITHUB_REF_NAME}" =~ ${RELEASE_TAG_PATTERN} ]]; then
+            echo "::error::'${GITHUB_REF_NAME}' is not a formal release tag." \
+                 "Only vX.Y.Z (e.g. v0.2.0) publishes to PyPI." \
+                 "Milestone tags like v0.2.0-phase2 are never published."
+            exit 1
+          fi
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Lint (ruff)
+        run: uv run ruff check .
+
+      - name: Type-check (mypy)
+        run: uv run mypy .
+
+      - name: Test (non-SITL)
+        run: uv run pytest -m "not sitl"
+
+      - name: Build distributions
+        run: uv build
+
+      - name: Verify tag matches package version
+        run: |
+          expected="v$(grep -m1 '^version' pyproject.toml | cut -d '"' -f2)"
+          if [[ "${GITHUB_REF_NAME}" != "${expected}" ]]; then
+            echo "::error::Tag ${GITHUB_REF_NAME} != package version ${expected}." \
+                 "Land a release commit setting version = \"${GITHUB_REF_NAME#v}\" first."
+            exit 1
+          fi
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
