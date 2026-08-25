@@ -112,7 +112,25 @@ Safety notes — read before pointing mavctl at anything that flies:
 
 ## Installation
 
-### From source (currently the only supported way)
+### From PyPI
+
+mavctl's first production release (`0.2.0`) is being prepared. After the
+PyPI release is published, install with:
+
+```bash
+uv tool install mavctl
+uvx mavctl --help
+pipx install mavctl
+```
+
+Until that release is published these commands have nothing to fetch from
+production PyPI; TestPyPI rehearsal artifacts are not production releases.
+Release status and the publishing runbook live in
+[docs/PUBLISHING.md](docs/PUBLISHING.md).
+
+### From source
+
+For development from source, use `uv sync` and `uv run mavctl …`:
 
 ```bash
 git clone https://github.com/LeaderOnePro/mavctl.git
@@ -120,19 +138,6 @@ cd mavctl
 uv sync
 uv run mavctl --help
 ```
-
-### Planned PyPI install (not available yet)
-
-PyPI publishing is being prepared. Future intended commands — **these are not
-available yet** because the package is not published:
-
-```text
-uv tool install mavctl
-uvx mavctl --help
-pipx install mavctl
-```
-
-Release status and the publishing runbook live in [docs/PUBLISHING.md](docs/PUBLISHING.md).
 
 ## Agent Skill
 

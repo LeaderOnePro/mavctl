@@ -1,10 +1,8 @@
 [project]
 name = "mavctl"
-# PEP 440 development version: unreleased work toward 0.2.0 (main already
-# carries the phase-2 hardening; 0.1.0 was never published). The v0.2.0-phase2
-# Git milestone tag is NOT a PyPI version; a real release lands a commit with
-# the plain "X.Y.Z" form first (see docs/PUBLISHING.md).
-version = "0.2.0.dev0"
+# First formal release. docs/PUBLISHING.md records the release procedure:
+# the v0.2.0 tag is created only after the release PR has merged.
+version = "0.2.0"
 description = "Headless, agent-first MAVLink ground-control CLI for ArduPilot vehicles"
 readme = "README.md"
 license = "MIT"
