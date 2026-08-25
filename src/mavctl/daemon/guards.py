@@ -14,6 +14,8 @@ Only then are command-specific preconditions evaluated.
 
 from __future__ import annotations
 
+import math
+
 from pydantic import BaseModel
 
 from mavctl.models import ExitCode, VehicleState
@@ -23,6 +25,10 @@ DEFAULT_MAX_TAKEOFF_ALT_M = 120.0
 DEFAULT_MIN_GPS_FIX_TYPE = 3  # 3D fix
 DEFAULT_AIRBORNE_ALT_THRESHOLD_M = 1.0
 DEFAULT_MAX_HEARTBEAT_AGE_S = 3.0
+# Conservative ceiling under which a *known* relative altitude counts as
+# "on the ground" for disarm. Deliberately far below the airborne threshold:
+# altitudes between the two are treated as UNKNOWN, not as ground.
+DEFAULT_MAX_ON_GROUND_ALT_M = 0.5
 _GUIDED = "GUIDED"
 
 
@@ -32,6 +38,7 @@ class GuardConfig(BaseModel):
     max_takeoff_alt_m: float = DEFAULT_MAX_TAKEOFF_ALT_M
     min_gps_fix_type: int = DEFAULT_MIN_GPS_FIX_TYPE
     airborne_alt_threshold_m: float = DEFAULT_AIRBORNE_ALT_THRESHOLD_M
+    max_on_ground_alt_m: float = DEFAULT_MAX_ON_GROUND_ALT_M
     max_heartbeat_age_s: float = DEFAULT_MAX_HEARTBEAT_AGE_S
 
 
@@ -193,9 +200,8 @@ def check_disarm(
         return terminal
 
     # Only treat an explicit ``False`` as already-disarmed. armed is None
-    # (unknown) is NOT treated as satisfied: we proceed to send disarm, which
-    # is the safe direction (disarming is a make-safe action; a truly airborne
-    # disarm is still caught below or NACKed by the autopilot).
+    # (unknown) is NOT treated as satisfied and falls through to the
+    # ground/air evidence check below — the safe direction.
     if state.armed is False:
         return GuardDecision(
             allowed=True,
@@ -205,11 +211,30 @@ def check_disarm(
             note="already disarmed",
         )
 
+    # --force is an explicit emergency override of every ground/air judgement
+    # below; mark it in checks so the audit trail shows it was used. It does
+    # NOT skip the idempotent short-circuit above (nothing to stop anyway).
+    if force:
+        return GuardDecision(
+            allowed=True,
+            action=action,
+            checks=[
+                *checks,
+                _passed(
+                    "on_ground",
+                    f"forced (landed_state={state.landed_state} "
+                    f"rel_alt={state.relative_alt_m})",
+                ),
+            ],
+        )
+
+    # Evidence of being airborne wins over anything else: checked BEFORE
+    # on-ground so contradictory telemetry rejects safely.
     airborne = state.landed_state == "in_air" or (
         state.relative_alt_m is not None
         and state.relative_alt_m > config.airborne_alt_threshold_m
     )
-    if airborne and not force:
+    if airborne:
         return _reject(
             action=action,
             reason="in_flight",
@@ -222,9 +247,38 @@ def check_disarm(
                 detail=f"landed_state={state.landed_state} rel_alt={state.relative_alt_m}",
             ),
         )
-    checks.append(
-        _passed("on_ground", "forced" if force else f"landed_state={state.landed_state}")
-    )
+
+    # Positive ground evidence: either an explicit landed_state or a known
+    # relative altitude at/below the conservative on-ground ceiling.
+    rel_alt = state.relative_alt_m
+    on_ground = state.landed_state == "on_ground"
+    low_known_alt = rel_alt is not None and rel_alt <= config.max_on_ground_alt_m
+    if not (on_ground or low_known_alt):
+        # Armed (or armed-unknown) but we can neither prove air nor ground.
+        # Missing telemetry must never be read as "on the ground"; refuse
+        # rather than lean on the autopilot's NACK as the safety net.
+        return _reject(
+            action=action,
+            reason="ground_state_unknown",
+            message=(
+                "refusing to disarm: vehicle is armed but it cannot be safely "
+                "determined whether it is on the ground"
+            ),
+            hint=(
+                "check landed_state / relative_alt first (mavctl status or "
+                "mavctl telemetry); land first (mavctl land --confirm) if in "
+                "doubt; --force is reserved for an intentional emergency "
+                "motor stop"
+            ),
+            checks=checks,
+            failed_check=GuardCheck(
+                name="ground_known",
+                passed=False,
+                detail=f"landed_state={state.landed_state} rel_alt={rel_alt}",
+            ),
+        )
+
+    checks.append(_passed("ground_known", f"landed_state={state.landed_state} rel_alt={rel_alt}"))
     return GuardDecision(allowed=True, action=action, checks=checks)
 
 
@@ -237,14 +291,44 @@ def check_mode(
         return terminal
     target = mode.upper()
 
-    if not available:
-        # Connected but the mode map has not populated yet (transient). We
-        # cannot validate the mode name; record the degraded state explicitly
-        # rather than passing silently, and let the autopilot reject if wrong.
-        checks.append(
-            _passed("mode_known", "mode list unavailable, validation skipped (degraded)")
+    # Idempotency first: if the vehicle is already in the target mode nothing
+    # will execute, so an unavailable mode map must not block a no-op.
+    if state.flight_mode == target:
+        return GuardDecision(
+            allowed=True,
+            action=action,
+            checks=[*checks, _passed("already_in_mode", f"already in {target}")],
+            already_satisfied=True,
+            note=f"already in {target}",
         )
-    elif target not in available:
+
+    if not available:
+        # Connected but the vehicle's mode map has not populated yet. Calling
+        # set_mode now would raise "unknown flight mode" and surface as an
+        # internal error (exit 1), so reject structurally instead.
+        #
+        # Exit 5 semantics on purpose: exit 4 is reserved everywhere else for
+        # *missing* vehicle state (no fresh heartbeat); here the link is alive
+        # and only a precondition is not yet ready, so a safety rejection with
+        # a retry hint is the honest code.
+        return _reject(
+            action=action,
+            reason="mode_map_unavailable",
+            message=(
+                "vehicle mode mapping is not available yet; "
+                f"cannot validate target mode {target!r}"
+            ),
+            hint=(
+                "wait for the vehicle's mode map to populate "
+                "(check: mavctl status), then retry this command"
+            ),
+            checks=checks,
+            failed_check=GuardCheck(
+                name="mode_known", passed=False, detail="mode list unavailable"
+            ),
+        )
+
+    if target not in available:
         return _reject(
             action=action,
             reason="unknown_mode",
@@ -256,17 +340,8 @@ def check_mode(
             ),
             exit_code=ExitCode.USAGE_ERROR,
         )
-    else:
-        checks.append(_passed("mode_known", f"{target} is available"))
 
-    if state.flight_mode == target:
-        return GuardDecision(
-            allowed=True,
-            action=action,
-            checks=[*checks, _passed("already_in_mode", f"already in {target}")],
-            already_satisfied=True,
-            note=f"already in {target}",
-        )
+    checks.append(_passed("mode_known", f"{target} is available"))
     return GuardDecision(allowed=True, action=action, checks=checks)
 
 
@@ -278,11 +353,13 @@ def check_takeoff(
     if terminal is not None:
         return terminal
 
-    if altitude_m <= 0:
+    # NaN slips every comparison, so it must be rejected explicitly before
+    # any threshold logic; Infinity likewise never reaches the adapter.
+    if not math.isfinite(altitude_m) or altitude_m <= 0:
         return _reject(
             action=action,
             reason="invalid_altitude",
-            message=f"takeoff altitude must be positive (got {altitude_m})",
+            message=f"takeoff altitude must be a finite positive number (got {altitude_m})",
             hint="provide a positive --alt in metres",
             checks=checks,
             failed_check=GuardCheck(name="alt_positive", passed=False, detail=f"alt={altitude_m}"),

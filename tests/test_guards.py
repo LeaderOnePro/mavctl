@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from mavctl.daemon import guards
 from mavctl.daemon.guards import GuardConfig
 from mavctl.models import Battery, ExitCode, GpsInfo, VehicleState
@@ -147,7 +149,8 @@ def test_disarm_idempotent_when_disarmed() -> None:
 
 
 def test_disarm_unknown_armed_is_not_idempotent() -> None:
-    # armed=None: do not treat as already-disarmed; proceed (on ground -> allow).
+    # armed=None: do not treat as already-disarmed; fall through to the
+    # ground-evidence check. A known low altitude still proves "on ground".
     d = guards.check_disarm(
         _state(armed=None, relative_alt_m=0.0), confirm=True, force=False, config=_CFG
     )
@@ -155,16 +158,128 @@ def test_disarm_unknown_armed_is_not_idempotent() -> None:
     assert d.already_satisfied is False
 
 
+def test_disarm_armed_with_no_ground_evidence_rejected() -> None:
+    # armed but neither landed_state nor altitude is known: missing telemetry
+    # must never be read as "on the ground" (P0).
+    d = guards.check_disarm(
+        _state(armed=True, landed_state=None, relative_alt_m=None),
+        confirm=True,
+        force=False,
+        config=_CFG,
+    )
+    assert d.allowed is False
+    assert d.reason == "ground_state_unknown"
+    assert d.exit_code == ExitCode.SAFETY_REJECTED
+    assert "armed" in (d.message or "")
+    assert "--force" in (d.hint or "")
+
+
+def test_disarm_unknown_armed_and_unknown_alt_rejected() -> None:
+    d = guards.check_disarm(
+        _state(armed=None, landed_state=None, relative_alt_m=None),
+        confirm=True,
+        force=False,
+        config=_CFG,
+    )
+    assert d.allowed is False
+    assert d.reason == "ground_state_unknown"
+    assert d.exit_code == ExitCode.SAFETY_REJECTED
+
+
+def test_disarm_allowed_on_explicit_on_ground() -> None:
+    d = guards.check_disarm(
+        _state(armed=True, landed_state="on_ground", relative_alt_m=None),
+        confirm=True,
+        force=False,
+        config=_CFG,
+    )
+    assert d.allowed is True
+
+
+def test_disarm_low_known_altitude_boundary() -> None:
+    at_ceiling = guards.check_disarm(
+        _state(armed=True, relative_alt_m=_CFG.max_on_ground_alt_m),
+        confirm=True,
+        force=False,
+        config=_CFG,
+    )
+    assert at_ceiling.allowed is True
+    just_above = guards.check_disarm(
+        _state(armed=True, relative_alt_m=_CFG.max_on_ground_alt_m + 0.1),
+        confirm=True,
+        force=False,
+        config=_CFG,
+    )
+    assert just_above.allowed is False
+    assert just_above.reason == "ground_state_unknown"
+
+
+def test_disarm_transition_states_are_not_ground() -> None:
+    # takeoff/landing transitions prove neither air nor ground -> unknown band.
+    for ls in ("takeoff", "landing"):
+        d = guards.check_disarm(
+            _state(armed=True, landed_state=ls, relative_alt_m=None),
+            confirm=True,
+            force=False,
+            config=_CFG,
+        )
+        assert d.allowed is False
+        assert d.reason == "ground_state_unknown"
+
+
+def test_disarm_contradictory_ground_report_with_high_alt_rejected() -> None:
+    # Air evidence wins over an on-ground report: reject safely.
+    d = guards.check_disarm(
+        _state(armed=True, landed_state="on_ground", relative_alt_m=15.0),
+        confirm=True,
+        force=False,
+        config=_CFG,
+    )
+    assert d.allowed is False
+    assert d.reason == "in_flight"
+
+
+def test_disarm_force_allows_and_marks_checks() -> None:
+    d = guards.check_disarm(
+        _state(armed=True, landed_state=None, relative_alt_m=None),
+        confirm=True,
+        force=True,
+        config=_CFG,
+    )
+    assert d.allowed is True
+    forced = [c for c in d.checks if c.name == "on_ground"]
+    assert forced and "forced" in forced[0].detail
+
+
 def test_disarm_airborne_threshold_is_configurable() -> None:
     cfg = GuardConfig(airborne_alt_threshold_m=5.0)
-    below = guards.check_disarm(
+    # Between the on-ground ceiling and the raised airborne threshold the
+    # state is UNKNOWN, not ground: reject rather than allow.
+    band = guards.check_disarm(
         _state(armed=True, relative_alt_m=3.0), confirm=True, force=False, config=cfg
     )
     above = guards.check_disarm(
         _state(armed=True, relative_alt_m=6.0), confirm=True, force=False, config=cfg
     )
-    assert below.allowed is True  # 3m < 5m threshold -> treated as on ground
+    assert band.allowed is False
+    assert band.reason == "ground_state_unknown"
     assert above.allowed is False and above.reason == "in_flight"
+
+
+def test_disarm_on_ground_ceiling_is_configurable() -> None:
+    # Default ceiling is 0.5 m while the airborne threshold stays at 1 m:
+    # 0.7 m sits in the unknown band until the ceiling is raised above it.
+    default = guards.check_disarm(
+        _state(armed=True, relative_alt_m=0.7), confirm=True, force=False, config=_CFG
+    )
+    assert default.allowed is False
+    assert default.reason == "ground_state_unknown"
+
+    cfg = GuardConfig(max_on_ground_alt_m=0.8)
+    raised = guards.check_disarm(
+        _state(armed=True, relative_alt_m=0.7), confirm=True, force=False, config=cfg
+    )
+    assert raised.allowed is True
 
 
 # -- mode ------------------------------------------------------------------
@@ -189,11 +304,24 @@ def test_mode_switch_allowed() -> None:
     assert d.already_satisfied is False
 
 
-def test_mode_empty_available_is_degraded_not_silent() -> None:
+def test_mode_map_unavailable_rejected_structurally() -> None:
+    # Empty mode map must not degrade into a silent pass-through: the guard
+    # rejects with a recoverable safety rejection (exit 5), never an internal
+    # error, and the caller must not reach adapter.set_mode.
     d = guards.check_mode(_state(flight_mode="GUIDED"), "LOITER", [], confirm=True, config=_CFG)
+    assert d.allowed is False
+    assert d.reason == "mode_map_unavailable"
+    assert d.exit_code == ExitCode.SAFETY_REJECTED
+    assert d.message and "mode mapping" in d.message
+    assert d.hint and "status" in d.hint
+
+
+def test_mode_idempotent_even_when_map_unavailable() -> None:
+    # Already in the target mode: nothing would execute, so a missing mode
+    # map must not block the no-op.
+    d = guards.check_mode(_state(flight_mode="LOITER"), "LOITER", [], confirm=True, config=_CFG)
     assert d.allowed is True
-    degraded = [c for c in d.checks if c.name == "mode_known"]
-    assert degraded and "degraded" in degraded[0].detail
+    assert d.already_satisfied is True
 
 
 # -- takeoff ---------------------------------------------------------------
@@ -201,6 +329,15 @@ def test_mode_empty_available_is_degraded_not_silent() -> None:
 
 def test_takeoff_requires_positive_alt() -> None:
     d = guards.check_takeoff(_state(armed=True), 0.0, confirm=True, config=_CFG)
+    assert d.allowed is False
+    assert d.reason == "invalid_altitude"
+    assert d.exit_code == ExitCode.USAGE_ERROR
+
+
+@pytest.mark.parametrize("bad_alt", [float("nan"), float("inf"), float("-inf")])
+def test_takeoff_non_finite_alt_rejected(bad_alt: float) -> None:
+    # NaN would slip every comparison; it must be rejected explicitly.
+    d = guards.check_takeoff(_state(armed=True), bad_alt, confirm=True, config=_CFG)
     assert d.allowed is False
     assert d.reason == "invalid_altitude"
     assert d.exit_code == ExitCode.USAGE_ERROR

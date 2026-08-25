@@ -40,6 +40,21 @@ def _await_connected(timeout: float = 15.0) -> dict[str, object]:
     return state
 
 
+def _await_gps_fix(min_fix: int = 3, timeout: float = 15.0) -> dict[str, object]:
+    """Wait until status reports a GPS fix (heartbeat can arrive before GPS_RAW_INT)."""
+
+    deadline = time.monotonic() + timeout
+    state = _status()
+    while time.monotonic() < deadline:
+        gps = state.get("gps") if isinstance(state.get("gps"), dict) else {}
+        fix = gps.get("fix_type") if isinstance(gps, dict) else None
+        if isinstance(fix, int) and fix >= min_fix:
+            return state
+        time.sleep(0.5)
+        state = _status()
+    return state
+
+
 @pytest.fixture
 def daemon(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     # AF_UNIX paths are capped near 104 bytes on macOS, so keep MAVCTL_HOME short.
@@ -78,6 +93,11 @@ def test_guard_rejects_arm_without_confirm(daemon: None) -> None:
 def test_full_flight_flow(daemon: None) -> None:
     state = _await_connected()
     assert state.get("connected") is True
+    state = _await_gps_fix()
+    gps_obj = state.get("gps")
+    gps: dict[str, object] = gps_obj if isinstance(gps_obj, dict) else {}
+    fix = gps.get("fix_type")
+    assert isinstance(fix, int) and fix >= 3, f"no 3D GPS fix within timeout: {gps}"
 
     def ok(resp: DaemonResponse, what: str) -> DaemonResponse:
         assert resp.ok is True, f"{what} failed: {resp.error}"

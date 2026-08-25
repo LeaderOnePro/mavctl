@@ -77,7 +77,8 @@ _LANDED_STATE_LABELS = {
 # Sentinels used by MAVLink to mean "field not populated".
 _UINT16_MAX = 65535
 
-# Magic param2 value that forces (dis)arming past pre-arm checks.
+# Magic param2 value for a forced DISARM (emergency motor stop). Arm never
+# sends it: there is no force-arm path in mavctl by design.
 _FORCE_ARM_MAGIC = 21196.0
 
 
@@ -100,26 +101,50 @@ class PymavlinkAdapter:
         source_system: int = 255,
         command_ack_timeout_s: float = 5.0,
         command_retries: int = 3,
+        command_ack_settle_s: float = 1.0,
     ) -> None:
         self._connection_string = connection_string
         self._heartbeat_timeout_s = heartbeat_timeout_s
         self._source_system = source_system
         self._command_ack_timeout_s = command_ack_timeout_s
         self._command_retries = command_retries
+        # Post-timeout quiet window for a command id (see _send_command).
+        self._command_ack_settle_s = command_ack_settle_s
 
         self._master: Any | None = None
         self._reader: threading.Thread | None = None
         self._stop = threading.Event()
         self._lock = threading.Lock()
         self._send_lock = threading.Lock()
+        # Serializes a whole command transaction (send -> await ACK -> retry)
+        # so two commands can never interleave or steal each other's ACK.
+        # Held only by executor threads running command verbs; the reader
+        # thread and snapshot reads (get_state/get_telemetry) never take it.
+        self._command_lock = threading.Lock()
 
         # COMMAND_ACK rendezvous: command id -> (result, recv_monotonic).
+        #
+        # MAVLink protocol limit: COMMAND_ACK carries the command id (and
+        # result) but not confirmation/param1, so arm and disarm — which share
+        # MAV_CMD_COMPONENT_ARM_DISARM — cannot be perfectly correlated to a
+        # specific send. Transaction serialization + stale-ACK clear reduce
+        # concurrent races; they cannot prove a late ACK after a timeout
+        # belongs to the next same-id send. See quarantine below.
         self._ack_cond = threading.Condition()
         self._acks: dict[int, tuple[int, float]] = {}
+        # command id -> monotonic deadline. After a full timeout we drop ACKs
+        # for that id until the settle window ends, and the next same-id send
+        # waits out the window first. Risk reduction only — not perfect
+        # correlation.
+        self._ack_quarantine_until: dict[int, float] = {}
 
-        # Target ids, learned from the first heartbeat.
+        # Target ids, learned from (and then locked to) the first autopilot
+        # heartbeat. Only this system+component may update the snapshot or
+        # answer COMMAND_ACKs. Defaults are placeholders until lock; ACKs and
+        # snapshot telemetry are rejected while unlocked.
         self._target_system = 1
         self._target_component = 1
+        self._target_locked = False
         self._streams_requested = False
 
         # Snapshot fields, all guarded by ``_lock``.
@@ -219,10 +244,12 @@ class PymavlinkAdapter:
     def mode_names(self) -> list[str]:
         return sorted(self._mode_mapping().keys())
 
-    def arm(self, force: bool = False) -> CommandOutcome:
+    def arm(self) -> CommandOutcome:
+        # param2 stays 0.0 unconditionally: mavctl never sends the 21196 magic
+        # that would bypass the autopilot's pre-arm checks.
         return self._send_command(
             mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM,
-            [1.0, _FORCE_ARM_MAGIC if force else 0.0],
+            [1.0, 0.0],
         )
 
     def disarm(self, force: bool = False) -> CommandOutcome:
@@ -267,20 +294,61 @@ class PymavlinkAdapter:
         attempts = retries if retries is not None else self._command_retries
         padded = (params + [0.0] * 7)[:7]
 
-        for attempt in range(1, attempts + 1):
-            send_ts = time.monotonic()
-            with self._send_lock:
-                master.mav.command_long_send(
-                    self._target_system,
-                    self._target_component,
-                    command,
-                    attempt - 1,  # confirmation counter
-                    *padded,
-                )
-            result = self._await_ack(command, send_ts, timeout)
-            if result is not None:
-                return CommandOutcome.from_ack(result, attempt)
-        return CommandOutcome.timeout(attempts)
+        # One command transaction at a time: send + await-ACK + retries are
+        # atomic so a concurrent command can neither interleave a send nor
+        # consume this command's ACK.
+        #
+        # Protocol limit (not fully solvable here): COMMAND_ACK only names the
+        # MAV_CMD id. Shared ids (arm/disarm) and late ACKs after a timeout
+        # cannot be correlated to a specific send with certainty. Mitigations:
+        # (1) this lock, (2) clear stale map entries at transaction start,
+        # (3) after a full timeout, quarantine that command id for
+        # ``command_ack_settle_s`` — drop ACKs and delay the next same-id
+        # send. These lower risk; they do not provide perfect correlation.
+        with self._command_lock:
+            self._wait_ack_quarantine(command)
+            # Drop any stale ACK for this command id left by a prior
+            # transaction (arm/disarm share MAV_CMD_COMPONENT_ARM_DISARM).
+            with self._ack_cond:
+                self._acks.pop(command, None)
+            for attempt in range(1, attempts + 1):
+                send_ts = time.monotonic()
+                with self._send_lock:
+                    master.mav.command_long_send(
+                        self._target_system,
+                        self._target_component,
+                        command,
+                        attempt - 1,  # confirmation counter
+                        *padded,
+                    )
+                result = self._await_ack(command, send_ts, timeout)
+                if result is not None:
+                    with self._ack_cond:
+                        self._ack_quarantine_until.pop(command, None)
+                    return CommandOutcome.from_ack(result, attempt)
+            # Full timeout: open a settle window so a late ACK for this
+            # failed transaction is less likely to satisfy the next same-id send.
+            with self._ack_cond:
+                self._acks.pop(command, None)
+                if self._command_ack_settle_s > 0:
+                    self._ack_quarantine_until[command] = (
+                        time.monotonic() + self._command_ack_settle_s
+                    )
+            return CommandOutcome.timeout(attempts)
+
+    def _wait_ack_quarantine(self, command: int) -> None:
+        """Block until any post-timeout settle window for ``command`` ends."""
+
+        while True:
+            with self._ack_cond:
+                until = self._ack_quarantine_until.get(command)
+                if until is None:
+                    return
+                remaining = until - time.monotonic()
+                if remaining <= 0:
+                    self._ack_quarantine_until.pop(command, None)
+                    return
+            time.sleep(min(remaining, 0.05))
 
     def _await_ack(self, command: int, send_ts: float, timeout: float) -> int | None:
         deadline = send_ts + timeout
@@ -333,18 +401,37 @@ class PymavlinkAdapter:
         if handler is not None:
             handler(self, msg)
 
+    def _is_locked_target(self, msg: Any) -> bool:
+        """True only when the autopilot target is locked and ``msg`` is from it."""
+
+        if not self._target_locked:
+            return False
+        return bool(
+            msg.get_srcSystem() == self._target_system
+            and msg.get_srcComponent() == self._target_component
+        )
+
     def _on_heartbeat(self, msg: Any) -> None:
+        src_system = msg.get_srcSystem()
+        src_component = msg.get_srcComponent()
+        # Lock onto the autopilot component on first discovery; afterwards only
+        # that exact system+component may update the vehicle snapshot. Heartbeats
+        # from other components (gimbal, companion, GCS) must never overwrite
+        # flight_mode / armed / system_status.
+        if not self._target_locked:
+            if src_component != mavutil.mavlink.MAV_COMP_ID_AUTOPILOT1:
+                return  # no autopilot seen yet; ignore other components
+            self._target_system = src_system
+            self._target_component = src_component
+            self._target_locked = True
+        elif not self._is_locked_target(msg):
+            return
+
         now_mono = time.monotonic()
         now_epoch = time.time()
         flight_mode = self._flightmode_string(msg)
         armed = bool(msg.base_mode & mavutil.mavlink.MAV_MODE_FLAG_SAFETY_ARMED)
         system_status = _MAV_STATE_LABELS.get(msg.system_status, f"state_{msg.system_status}")
-        src_system = msg.get_srcSystem()
-        src_component = msg.get_srcComponent()
-        # Learn the target ids for command addressing (autopilot component only).
-        if src_component == mavutil.mavlink.MAV_COMP_ID_AUTOPILOT1:
-            self._target_system = src_system
-            self._target_component = src_component
         self._request_streams_once()
         with self._lock:
             self._system_id = src_system
@@ -362,7 +449,7 @@ class PymavlinkAdapter:
         if self._streams_requested or self._master is None:
             return
         self._streams_requested = True
-        with contextlib.suppress(Exception):
+        with contextlib.suppress(Exception), self._send_lock:
             self._master.mav.request_data_stream_send(
                 self._target_system,
                 self._target_component,
@@ -381,6 +468,8 @@ class PymavlinkAdapter:
         return f"mode({msg.custom_mode})"
 
     def _on_sys_status(self, msg: Any) -> None:
+        if not self._is_locked_target(msg):
+            return
         voltage = msg.voltage_battery
         current = msg.current_battery
         remaining = msg.battery_remaining
@@ -393,6 +482,8 @@ class PymavlinkAdapter:
             self._battery = battery
 
     def _on_global_position(self, msg: Any) -> None:
+        if not self._is_locked_target(msg):
+            return
         vx = msg.vx / 100.0
         vy = msg.vy / 100.0
         vz = msg.vz / 100.0
@@ -418,6 +509,8 @@ class PymavlinkAdapter:
             self._telemetry_ts = time.time()
 
     def _on_attitude(self, msg: Any) -> None:
+        if not self._is_locked_target(msg):
+            return
         attitude = Attitude(
             roll_deg=math.degrees(msg.roll),
             pitch_deg=math.degrees(msg.pitch),
@@ -428,6 +521,8 @@ class PymavlinkAdapter:
             self._telemetry_ts = time.time()
 
     def _on_gps_raw(self, msg: Any) -> None:
+        if not self._is_locked_target(msg):
+            return
         gps = GpsInfo(
             fix_type=msg.fix_type,
             fix_label=_GPS_FIX_LABELS.get(msg.fix_type, "unknown"),
@@ -439,16 +534,34 @@ class PymavlinkAdapter:
             self._gps = gps
 
     def _on_command_ack(self, msg: Any) -> None:
+        # Refuse all ACKs until the autopilot target is locked. Default
+        # target ids (1/1) are placeholders and must not accept traffic.
+        if not self._target_locked:
+            return
+        # Only accept ACKs from the locked autopilot; ignore ACKs emitted by
+        # other systems/components so one vehicle's ACK can never satisfy a
+        # command addressed to ours.
+        if not self._is_locked_target(msg):
+            return
+        command = int(msg.command)
         with self._ack_cond:
-            self._acks[int(msg.command)] = (int(msg.result), time.monotonic())
+            until = self._ack_quarantine_until.get(command)
+            if until is not None and time.monotonic() < until:
+                # Late ACK during post-timeout settle window — drop.
+                return
+            self._acks[command] = (int(msg.result), time.monotonic())
             self._ack_cond.notify_all()
 
     def _on_extended_sys_state(self, msg: Any) -> None:
+        if not self._is_locked_target(msg):
+            return
         label = _LANDED_STATE_LABELS.get(msg.landed_state)
         with self._lock:
             self._landed_state = label
 
     def _on_home_position(self, msg: Any) -> None:
+        if not self._is_locked_target(msg):
+            return
         home = HomePosition(
             lat_deg=msg.latitude / 1e7,
             lon_deg=msg.longitude / 1e7,
