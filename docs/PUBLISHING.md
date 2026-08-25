@@ -98,11 +98,24 @@ there affects real PyPI. Recommended dry run before the first real release:
    ```bash
    uv build
    export UV_PUBLISH_USERNAME=__token__
-   export UV_PUBLISH_PASSWORD=pypi-AgENb...   # your TestPyPI API token
+   export UV_PUBLISH_PASSWORD=<TEST_PYPI_TOKEN>
    uv publish --publish-url https://test.pypi.org/legacy/
    ```
 3. Install the result into a scratch venv from TestPyPI's index and run
    `mavctl --help`.
+
+## TestPyPI rehearsal record
+
+- Rehearsal completed successfully on 2026-08-26.
+- Tested package version: `0.2.0.dev0`; both wheel and sdist uploaded to
+  TestPyPI.
+- A clean temporary virtual environment installed `mavctl==0.2.0.dev0` from
+  TestPyPI, with dependencies resolved from PyPI.
+- Smoke checks passed: `mavctl --help` and `mavctl daemon --help`.
+- This does **not** mean mavctl has been released on production PyPI; the
+  status at the top of this document still applies.
+- TestPyPI does not permit re-uploading the same distribution version, so a
+  future rehearsal needs a new version such as `0.2.0.dev1`.
 
 ## Post-release verification
 
