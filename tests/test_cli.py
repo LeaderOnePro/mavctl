@@ -46,6 +46,46 @@ def test_status_success_human(monkeypatch: pytest.MonkeyPatch) -> None:
     assert "LOITER" in result.stdout
 
 
+def test_status_human_unknown_armed_when_connected_and_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """armed=None while connected must render "unknown", never "disarmed"."""
+
+    payload = {"connected": True, "flight_mode": "GUIDED", "armed": None}
+    monkeypatch.setattr(_CALL_DAEMON, lambda *a, **k: DaemonResponse.success(payload))
+    result = runner.invoke(app, ["status"])
+
+    assert result.exit_code == ExitCode.SUCCESS
+    assert "armed      : unknown" in result.stdout
+    assert "disarmed" not in result.stdout
+
+
+def test_status_human_na_armed_when_disconnected(monkeypatch: pytest.MonkeyPatch) -> None:
+    payload = {"connected": False, "flight_mode": None, "armed": None}
+    monkeypatch.setattr(_CALL_DAEMON, lambda *a, **k: DaemonResponse.success(payload))
+    result = runner.invoke(app, ["status"])
+
+    assert result.exit_code == ExitCode.SUCCESS
+    assert "armed      : n/a" in result.stdout
+
+
+def test_invalid_timeout_rejected_client_side(monkeypatch: pytest.MonkeyPatch) -> None:
+    """--timeout <= 0 / non-finite fails fast with exit 2, daemon never called."""
+
+    called = False
+
+    def spy(*a: object, **k: object) -> DaemonResponse:
+        nonlocal called
+        called = True
+        return DaemonResponse.success({})
+
+    monkeypatch.setattr(_CALL_DAEMON, spy)
+    for bad in ("0", "-1", "nan", "inf"):
+        result = runner.invoke(app, ["mode", "LOITER", "--confirm", "--wait", "--timeout", bad])
+        assert result.exit_code == ExitCode.USAGE_ERROR, bad
+    assert called is False
+
+
 def test_telemetry_not_connected_exits_4(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         _CALL_DAEMON,
@@ -117,7 +157,8 @@ def test_arm_passes_params_and_formats(monkeypatch: pytest.MonkeyPatch) -> None:
 
     assert result.exit_code == ExitCode.SUCCESS
     assert captured["method"] == "arm"
-    assert captured["params"] == {"confirm": True, "force": False, "dry_run": False}
+    # No force key at all: arm has no bypass path.
+    assert captured["params"] == {"confirm": True, "dry_run": False}
     assert "ACCEPTED" in result.stdout
 
 
@@ -158,6 +199,29 @@ def test_mode_dry_run_json(monkeypatch: pytest.MonkeyPatch) -> None:
 
     assert result.exit_code == ExitCode.SUCCESS
     assert json.loads(result.stdout)["would_execute"] is True
+
+
+def test_mode_map_unavailable_maps_exit_5_not_internal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        _CALL_DAEMON,
+        lambda *a, **k: DaemonResponse.failure(
+            ExitCode.SAFETY_REJECTED,
+            "vehicle mode mapping is not available yet; cannot validate target mode 'LOITER'",
+            {
+                "reason": "mode_map_unavailable",
+                "hint": "wait for the vehicle's mode map (check: mavctl status), then retry",
+            },
+        ),
+    )
+    result = runner.invoke(app, ["mode", "LOITER", "--confirm", "--json"])
+
+    # Recoverable precondition failure (5), never an internal error (1).
+    assert result.exit_code == ExitCode.SAFETY_REJECTED
+    body = json.loads(result.stderr)
+    assert body["error"]["detail"]["reason"] == "mode_map_unavailable"
+    assert "status" in body["error"]["detail"]["hint"]
 
 
 def test_takeoff_requires_alt_option() -> None:

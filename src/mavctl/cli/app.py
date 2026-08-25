@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from typing import Annotated, Any
 
 import typer
@@ -28,7 +29,14 @@ ConfirmOption = Annotated[
 DryRunOption = Annotated[
     bool, typer.Option("--dry-run", help="Run safety checks and report without executing.")
 ]
-ForceOption = Annotated[bool, typer.Option("--force", help="Override safety checks (DANGEROUS).")]
+# Only disarm takes --force (emergency motor stop); arm has no force path.
+DisarmForceOption = Annotated[
+    bool,
+    typer.Option(
+        "--force",
+        help="Emergency motor stop; using in flight may cause a crash.",
+    ),
+]
 WaitOption = Annotated[
     bool, typer.Option("--wait", help="Block until the target state is reached.")
 ]
@@ -46,6 +54,13 @@ _COMMAND_BASE_TIMEOUT = 25.0
 
 def _client_timeout(wait: bool, timeout: float) -> float:
     return timeout + 30.0 if wait else _COMMAND_BASE_TIMEOUT
+
+
+def _check_timeout(timeout: float, *, json_mode: bool) -> None:
+    """Early CLI-side range check; the daemon re-validates as final boundary."""
+
+    if not (math.isfinite(timeout) and timeout > 0):
+        fail(ExitCode.USAGE_ERROR, "--timeout must be finite and > 0", json_mode=json_mode)
 
 
 def _call(
@@ -168,16 +183,15 @@ def telemetry(json_mode: JsonOption = False) -> None:
 @app.command("arm")
 def arm(
     confirm: ConfirmOption = False,
-    force: ForceOption = False,
     dry_run: DryRunOption = False,
     json_mode: JsonOption = False,
 ) -> None:
-    """Arm the vehicle (requires --confirm)."""
+    """Arm the vehicle (requires --confirm; pre-arm checks are never bypassed)."""
 
     result = _call(
         "arm",
         json_mode,
-        {"confirm": confirm, "force": force, "dry_run": dry_run},
+        {"confirm": confirm, "dry_run": dry_run},
         timeout=_COMMAND_BASE_TIMEOUT,
     )
     emit_success(result, json_mode=json_mode, human=_format_command(result))
@@ -186,11 +200,11 @@ def arm(
 @app.command("disarm")
 def disarm(
     confirm: ConfirmOption = False,
-    force: ForceOption = False,
+    force: DisarmForceOption = False,
     dry_run: DryRunOption = False,
     json_mode: JsonOption = False,
 ) -> None:
-    """Disarm the vehicle (requires --confirm; --force to override in-flight)."""
+    """Disarm the vehicle (requires --confirm; --force for emergency stop)."""
 
     result = _call(
         "disarm",
@@ -214,6 +228,7 @@ def mode(
 ) -> None:
     """Switch flight mode (requires --confirm)."""
 
+    _check_timeout(timeout, json_mode=json_mode)
     result = _call(
         "mode",
         json_mode,
@@ -240,6 +255,7 @@ def takeoff(
 ) -> None:
     """Take off to a target altitude (requires --confirm; GUIDED + armed)."""
 
+    _check_timeout(timeout, json_mode=json_mode)
     result = _call(
         "takeoff",
         json_mode,
@@ -259,6 +275,7 @@ def land(
 ) -> None:
     """Land at the current position (requires --confirm)."""
 
+    _check_timeout(timeout, json_mode=json_mode)
     result = _call(
         "land",
         json_mode,
@@ -278,6 +295,7 @@ def rtl(
 ) -> None:
     """Return to launch (requires --confirm)."""
 
+    _check_timeout(timeout, json_mode=json_mode)
     result = _call(
         "rtl",
         json_mode,
@@ -303,13 +321,21 @@ def _format_state(s: dict[str, Any]) -> str:
     battery = s.get("battery") or {}
     gps = s.get("gps") or {}
     connected = s.get("connected")
+    # armed is tri-state: never render an unknown (None) as "disarmed".
+    armed_raw = s.get("armed")
+    if armed_raw is True:
+        armed_text = "ARMED"
+    elif armed_raw is False:
+        armed_text = "disarmed"
+    else:
+        armed_text = "unknown" if connected else "n/a"
     lines = [
         f"connection : {'CONNECTED' if connected else 'DISCONNECTED'} "
         f"({s.get('connection_string') or 'n/a'})",
         f"heartbeat  : {_fmt(s.get('heartbeat_age_s'), 's')} ago"
         f"  sys={_fmt(s.get('system_id'))} comp={_fmt(s.get('component_id'))}",
         f"mode       : {s.get('flight_mode') or 'n/a'}",
-        f"armed      : {'ARMED' if s.get('armed') else 'disarmed' if connected else 'n/a'}",
+        f"armed      : {armed_text}",
         f"status     : {s.get('system_status') or 'n/a'}"
         f"  landed={s.get('landed_state') or 'n/a'}"
         f"  rel_alt={_fmt(s.get('relative_alt_m'), ' m')}",

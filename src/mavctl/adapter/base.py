@@ -56,8 +56,12 @@ class VehicleAdapter(Protocol):
         """Return the flight-mode names supported by the vehicle."""
         ...
 
-    def arm(self, force: bool = False) -> CommandOutcome:
-        """Send an arm command and await its ACK."""
+    def arm(self) -> CommandOutcome:
+        """Send an arm command and await its ACK.
+
+        Force-arm (MAV_CMD_COMPONENT_ARM_DISARM param2=21196) is deliberately
+        not part of this interface: pre-arm checks are never bypassed.
+        """
         ...
 
     def disarm(self, force: bool = False) -> CommandOutcome:

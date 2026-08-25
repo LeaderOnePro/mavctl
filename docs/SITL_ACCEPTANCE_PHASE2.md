@@ -38,6 +38,8 @@ home       : lat=-35.3632621  lon=149.1652374  alt_msl=584.09 m
 > 说明：`landed_state` 在 ArduCopter 上常为 `n/a`（该机型默认不发
 > `EXTENDED_SYS_STATE`）；护栏与 `--wait` 判定用 `relative_alt` / `armed`
 > 作为稳健回退，不依赖它。`home` 在设定家点后出现。
+> 注意：正因 `landed_state` 常缺失，已 armed 的 disarm 只有在拿到明确的地面
+> 证据时才会放行（见 §7 的 `ground_state_unknown` 说明）。
 
 ## 2. 护栏：缺少 --confirm（退出码 5）
 
@@ -134,13 +136,39 @@ uv run mavctl land --confirm --wait --timeout 90 ; echo "exit=$?"
 | 超高度上限 | `mavctl takeoff --alt 999 --confirm` | 5 | altitude_limit |
 | 非法高度 | `mavctl takeoff --alt 0 --confirm` | 2 | invalid_altitude |
 | 未知模式 | `mavctl mode WARP --confirm` | 2 | unknown_mode |
-| 空中 disarm | 起飞后 `mavctl disarm --confirm`（非 landed） | 5 或 6 | in_flight（见下注） |
+| force arm（协议层禁止） | 直发 RPC `{"method":"arm","params":{"confirm":true,"force":true}}`；CLI 无 `arm --force` | 2 | unsupported_force_arm |
+| 非法 --timeout | `mode LOITER --confirm --wait --timeout 0 / -1 / nan / inf / abc` | 2 | invalid_timeout |
+| 非有限起飞高度 | `takeoff --alt nan --confirm`（NaN/±Infinity 同理） | 2 | invalid_altitude |
+| 空中 disarm | 起飞后 `mavctl disarm --confirm`（已明确离地） | 5 | in_flight |
+| 地面状态未知 disarm | 已 armed 但无地面证据时 `disarm --confirm`（如刚起飞的过渡区间、遥测暂缺） | 5 | ground_state_unknown |
+| 模式表未就绪 | daemon 刚连上、模式表未填充时 `mode LOITER --confirm` | 5 | mode_map_unavailable |
 
-> **空中 disarm 说明**：一旦确实离地（`rel_alt` > 1m），护栏以 `in_flight`
-> 拒绝，退出码 **5**。但在 takeoff 后约 1 秒的过渡窗口内（`rel_alt` 尚未
-> 超过阈值），护栏会放行，转由**飞控自身 NACK**（`FAILED`）拦截，退出码
-> **6**。两种情况都安全地阻止了空中上锁。`--force` 可越过护栏（危险，会真的
-> 停桨坠机，勿在空中使用）。
+> **空中 / 地面状态不明的 disarm 说明**：非 force 的 `disarm --confirm` 只有在
+> **能证明在地面**时才放行——显式 `landed_state=on_ground`，或 `relative_alt`
+> 已知且 ≤ `max_on_ground_alt_m`（默认 0.5 m，保守值，可配置）。判定顺序：
+>
+> 1. 确实离地（`landed_state=in_air` 或 `rel_alt` > `airborne_alt_threshold_m`
+>    默认 1 m）→ `in_flight`，退出码 **5**；
+> 2. 有地面证据 → 放行；
+> 3. 其余（含 takeoff 后约 1 秒的过渡区间、ArduCopter 不发
+>    `EXTENDED_SYS_STATE` 且遥测暂缺的情况）→ **`ground_state_unknown`，
+>    退出码 5**。遥测缺失不再被当作"在地面"，飞控 NACK 不再作为设计上的防线。
+>
+> `--force`（仅 `disarm` 提供）可越过以上全部判定（checks 中标记
+> `forced`），语义为 **emergency motor stop; using in flight may cause a
+> crash** —— 仅限紧急情况下的故意停桨。
+>
+> **arm 没有 --force**：`mavctl arm` 不提供该参数，adapter 层的 arm 固定发送
+> param1=1.0 / param2=0.0，不存在绕过 pre-arm checks 的路径；即使恶意客户端
+> 直发 RPC `{"confirm":true,"force":true}`，daemon 也以 exit 2
+> （`unsupported_force_arm`）拒绝。
+
+> **模式表未就绪说明**：连接建立但载具的模式映射表尚未填充时，目标模式无法
+> 校验，此时 `mode` 以 `mode_map_unavailable` 拒绝（退出码 **5**），不会退化
+> 为内部错误（退出码 1），也不会调用 adapter。按 hint 等 `mavctl status`
+> 显示模式后再重试即可。语义约定：**退出码 4 只表示"没有存活的载具状态"
+> （心跳缺失/过期/失链）**；链路存活但前置状态不可判定或未就绪的情况一律
+> 归入退出码 5。
 
 验证几条：
 
@@ -150,7 +178,12 @@ uv run mavctl takeoff --alt 0 --confirm ; echo "exit=$?"      # exit=2 (invalid_
 uv run mavctl mode WARP --confirm ; echo "exit=$?"            # exit=2 (unknown_mode)
 # 空中时：
 uv run mavctl disarm --confirm ; echo "exit=$?"               # exit=5 (in_flight)
+# 地面状态未知时（如刚起飞的过渡区间）：
+uv run mavctl disarm --confirm ; echo "exit=$?"               # exit=5 (ground_state_unknown)
+# --force 仅限紧急停桨（emergency motor stop; using in flight may cause a crash）：
 uv run mavctl disarm --confirm --force ; echo "exit=$?"       # --force 覆盖（危险）
+# arm 无 --force；直发 force=true 的 RPC 会被拒绝：
+uv run mavctl arm --force --confirm ; echo "exit=$?"          # typer: no such option, exit=2
 ```
 
 ## 8. NACK / 超时（退出码 6）
@@ -264,10 +297,10 @@ Agent 侧仍建议：危险命令后用 `mavctl status` 轮询确认 `armed` / `
 | ------ | ---- |
 | 0 | 成功（含幂等 no-op、dry-run 通过、IN_PROGRESS 已接受） |
 | 1 | 通用错误 |
-| 2 | 参数错误（非法高度、未知模式、缺少必填项） |
+| 2 | 参数错误（非法/非有限高度、非法 --timeout、未知模式、缺少必填项、不支持的 force arm） |
 | 3 | daemon 未运行 |
-| 4 | 飞控未连接（含 --wait 中途失链） |
-| 5 | 安全护栏拒绝 |
+| 4 | 飞控未连接（含 --wait 中途失链）。**只表示没有存活的载具状态**：心跳缺失/过期/失链 |
+| 5 | 安全护栏拒绝。链路存活但前置状态不可判定/未就绪也归此码（`ground_state_unknown`、`mode_map_unavailable`），不占用 4 |
 | 6 | 飞控 NACK / ACK 超时 / --wait 超时（链路仍在） |
 
 ## 10. 收尾

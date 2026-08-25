@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import math
 import signal
 from collections.abc import Awaitable, Callable
 from typing import Any
@@ -153,6 +154,14 @@ class DaemonServer:
 
     async def _m_arm(self, request: RpcRequest) -> DaemonResponse:
         p = request.params
+        # Force-arm is not a supported operation at any layer: even a direct
+        # RPC client cannot smuggle the 21196 magic past this boundary.
+        if _flag(p, "force"):
+            return DaemonResponse.failure(
+                ExitCode.USAGE_ERROR,
+                "force arm is not supported; pre-arm checks cannot be bypassed",
+                {"reason": "unsupported_force_arm"},
+            )
         async with self._command_lock:
             state = self._adapter.get_state()
             if not state.connected:
@@ -163,7 +172,7 @@ class DaemonServer:
             pre = self._pre_execute(decision, dry_run=_flag(p, "dry_run"))
             if pre is not None:
                 return pre
-            outcome = await self._blocking(self._adapter.arm, _flag(p, "force"))
+            outcome = await self._blocking(self._adapter.arm)
             return self._command_result("arm", outcome)
 
     async def _m_disarm(self, request: RpcRequest) -> DaemonResponse:
@@ -187,6 +196,10 @@ class DaemonServer:
     async def _m_mode(self, request: RpcRequest) -> DaemonResponse:
         p = request.params
         mode = str(p.get("mode", "")).upper()
+        try:
+            wait_timeout = _wait_timeout(p)
+        except ValueError as exc:
+            return self._invalid_timeout(exc)
         async with self._command_lock:
             state = self._adapter.get_state()
             if not state.connected:
@@ -205,19 +218,29 @@ class DaemonServer:
             if not outcome.accepted:
                 return self._command_result("mode", outcome)
             status = await self._maybe_wait(
-                p, lambda: self._adapter.get_state().flight_mode == mode
+                p, lambda: self._adapter.get_state().flight_mode == mode, timeout=wait_timeout
             )
-            return self._finish_wait("mode", outcome, p, status, f"mode did not switch to {mode}")
+            return self._finish_wait(
+                "mode", outcome, status, wait_timeout, f"mode did not switch to {mode}"
+            )
 
     async def _m_takeoff(self, request: RpcRequest) -> DaemonResponse:
         p = request.params
         alt_raw = p.get("alt")
         if alt_raw is None:
-            return DaemonResponse.failure(ExitCode.USAGE_ERROR, "takeoff requires numeric --alt")
+            return self._invalid_altitude()
         try:
             alt = float(alt_raw)
         except (TypeError, ValueError):
-            return DaemonResponse.failure(ExitCode.USAGE_ERROR, "takeoff requires numeric --alt")
+            return self._invalid_altitude()
+        # NaN slips every comparison and Infinity exceeds any limit; reject
+        # them here so they never reach the guard or the adapter.
+        if not math.isfinite(alt):
+            return self._invalid_altitude()
+        try:
+            wait_timeout = _wait_timeout(p)
+        except ValueError as exc:
+            return self._invalid_timeout(exc)
         async with self._command_lock:
             state = self._adapter.get_state()
             if not state.connected:
@@ -232,9 +255,11 @@ class DaemonServer:
             if not outcome.accepted:
                 return self._command_result("takeoff", outcome)
             target = alt * _TAKEOFF_REACHED_FRACTION
-            status = await self._maybe_wait(p, lambda: self._reached_altitude(target))
+            status = await self._maybe_wait(
+                p, lambda: self._reached_altitude(target), timeout=wait_timeout
+            )
             return self._finish_wait(
-                "takeoff", outcome, p, status, f"altitude {target:.1f}m not reached"
+                "takeoff", outcome, status, wait_timeout, f"altitude {target:.1f}m not reached"
             )
 
     async def _m_land(self, request: RpcRequest) -> DaemonResponse:
@@ -247,6 +272,10 @@ class DaemonServer:
         self, request: RpcRequest, action: str, verb: Callable[[], CommandOutcome]
     ) -> DaemonResponse:
         p = request.params
+        try:
+            wait_timeout = _wait_timeout(p)
+        except ValueError as exc:
+            return self._invalid_timeout(exc)
         async with self._command_lock:
             state = self._adapter.get_state()
             if not state.connected:
@@ -262,8 +291,12 @@ class DaemonServer:
             outcome = await self._blocking(verb)
             if not outcome.accepted:
                 return self._command_result(action, outcome)
-            status = await self._maybe_wait(p, lambda: self._adapter.get_state().armed is False)
-            return self._finish_wait(action, outcome, p, status, "vehicle did not disarm")
+            status = await self._maybe_wait(
+                p, lambda: self._adapter.get_state().armed is False, timeout=wait_timeout
+            )
+            return self._finish_wait(
+                action, outcome, status, wait_timeout, "vehicle did not disarm"
+            )
 
     # -- helpers -----------------------------------------------------------
 
@@ -272,6 +305,20 @@ class DaemonServer:
             ExitCode.VEHICLE_NOT_CONNECTED,
             "vehicle not connected (no recent heartbeat)",
             {"connection_string": self._connection_string},
+        )
+
+    def _invalid_altitude(self) -> DaemonResponse:
+        return DaemonResponse.failure(
+            ExitCode.USAGE_ERROR,
+            "takeoff requires a finite numeric --alt",
+            {"reason": "invalid_altitude"},
+        )
+
+    def _invalid_timeout(self, exc: ValueError) -> DaemonResponse:
+        return DaemonResponse.failure(
+            ExitCode.USAGE_ERROR,
+            f"invalid --timeout: {exc}",
+            {"reason": "invalid_timeout"},
         )
 
     def _pre_execute(self, decision: GuardDecision, *, dry_run: bool) -> DaemonResponse | None:
@@ -350,7 +397,7 @@ class DaemonServer:
         return DaemonResponse.success(result)
 
     async def _maybe_wait(
-        self, params: dict[str, Any], predicate: Callable[[], bool]
+        self, params: dict[str, Any], predicate: Callable[[], bool], *, timeout: float
     ) -> WaitStatus:
         """Poll for the target state while --wait is set.
 
@@ -361,7 +408,6 @@ class DaemonServer:
 
         if not _flag(params, "wait"):
             return WaitStatus.NOT_WAITED
-        timeout = _timeout(params)
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
         while loop.time() < deadline:
@@ -378,8 +424,8 @@ class DaemonServer:
         self,
         action: str,
         outcome: CommandOutcome,
-        params: dict[str, Any],
         status: WaitStatus,
+        timeout: float,
         timeout_detail: str,
     ) -> DaemonResponse:
         """Map a --wait outcome to the response / exit-code contract."""
@@ -398,7 +444,7 @@ class DaemonServer:
             return DaemonResponse.failure(
                 ExitCode.NACK_TIMEOUT,
                 f"{action} accepted but did not complete within "
-                f"{_timeout(params):.0f}s: {timeout_detail}",
+                f"{timeout:.0f}s: {timeout_detail}",
                 {"outcome": outcome.model_dump(), "waited": False},
             )
         waited = True if status is WaitStatus.REACHED else None
@@ -431,9 +477,20 @@ def _flag(params: dict[str, Any], key: str) -> bool:
     return bool(params.get(key, False))
 
 
-def _timeout(params: dict[str, Any]) -> float:
+def _wait_timeout(params: dict[str, Any]) -> float:
+    """Parse and validate the --wait timeout; the daemon is the final boundary.
+
+    Returns the default when the key is absent. Raises ``ValueError`` for
+    non-numeric values, NaN / Infinity, and zero or negative values — callers
+    must surface that as a usage error (exit 2), never fall back silently.
+    """
+
     value = params.get("timeout")
-    try:
-        return float(value) if value is not None else _DEFAULT_WAIT_TIMEOUT
-    except (TypeError, ValueError):
+    if value is None:
         return _DEFAULT_WAIT_TIMEOUT
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError("must be a number of seconds")
+    timeout = float(value)
+    if not math.isfinite(timeout) or timeout <= 0:
+        raise ValueError("must be finite and > 0")
+    return timeout

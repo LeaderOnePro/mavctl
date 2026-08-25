@@ -52,8 +52,8 @@ class FakeAdapter:
     def mode_names(self) -> list[str]:
         return ["GUIDED", "LOITER", "RTL", "LAND", "STABILIZE"]
 
-    def arm(self, force: bool = False) -> CommandOutcome:
-        self.calls.append(f"arm(force={force})")
+    def arm(self) -> CommandOutcome:
+        self.calls.append("arm()")
         self._state = self._state.model_copy(update={"armed": True})
         return self._outcome
 
@@ -209,7 +209,21 @@ async def test_arm_dry_run_does_not_execute() -> None:
     assert response.result is not None
     assert response.result["dry_run"] is True
     assert response.result["would_execute"] is True
-    assert "arm(force=False)" not in server._adapter.calls  # type: ignore[attr-defined]
+    assert server._adapter.calls == []  # type: ignore[attr-defined]
+
+
+async def test_rpc_force_arm_rejected_exit_2_never_reaches_adapter() -> None:
+    """A direct RPC client sending force=true must get a usage error; the
+    adapter's arm verb takes no arguments at all, so no force path exists."""
+
+    server = _server()
+    response = await server._dispatch(_params(method="arm", confirm=True, force=True))
+
+    assert response.ok is False
+    assert response.error is not None
+    assert response.error.code == ExitCode.USAGE_ERROR
+    assert response.error.detail["reason"] == "unsupported_force_arm"
+    assert server._adapter.calls == []  # type: ignore[attr-defined]
 
 
 async def test_arm_idempotent_when_already_armed() -> None:
@@ -237,6 +251,58 @@ async def test_takeoff_missing_alt_is_usage_error() -> None:
     assert response.error.code == ExitCode.USAGE_ERROR
 
 
+@pytest.mark.parametrize("bad_alt", [float("nan"), float("inf"), float("-inf")])
+async def test_takeoff_non_finite_alt_rejected_exit_2(bad_alt: float) -> None:
+    """NaN / Infinity never reach the guard or the adapter."""
+
+    server = _server(armed=True)
+    response = await server._dispatch(_params(method="takeoff", confirm=True, alt=bad_alt))
+    assert response.ok is False
+    assert response.error is not None
+    assert response.error.code == ExitCode.USAGE_ERROR
+    assert response.error.detail["reason"] == "invalid_altitude"
+    assert server._adapter.calls == []  # type: ignore[attr-defined]
+
+
+@pytest.mark.parametrize(
+    ("method", "extra"),
+    [
+        ("mode", {"mode": "LOITER"}),
+        ("takeoff", {"alt": 10.0}),
+        ("land", {}),
+        ("rtl", {}),
+    ],
+)
+@pytest.mark.parametrize("bad_timeout", [0, -1, "5", float("nan"), float("inf"), True])
+async def test_invalid_wait_timeout_rejected_exit_2(
+    method: str, extra: dict[str, object], bad_timeout: object
+) -> None:
+    """Non-numeric / NaN / Infinity / <= 0 timeouts are usage errors at the
+    daemon boundary — no silent fallback to the 60s default."""
+
+    server = _server(mode="GUIDED")
+    response = await server._dispatch(
+        _params(method=method, confirm=True, wait=True, timeout=bad_timeout, **extra)
+    )
+    assert response.ok is False
+    assert response.error is not None
+    assert response.error.code == ExitCode.USAGE_ERROR
+    assert response.error.detail["reason"] == "invalid_timeout"
+    assert server._adapter.calls == []  # type: ignore[attr-defined]
+
+
+async def test_wait_without_timeout_uses_default_and_succeeds() -> None:
+    """Absent timeout key still defaults to 60s and does not error."""
+
+    server = _server(mode="GUIDED")
+    response = await server._dispatch(
+        _params(method="mode", mode="LOITER", confirm=True, wait=True)
+    )
+    assert response.ok is True
+    assert response.result is not None
+    assert response.result["waited"] is True
+
+
 async def test_takeoff_wrong_mode_rejected() -> None:
     server = _server(mode="STABILIZE", armed=True)
     response = await server._dispatch(_params(method="takeoff", confirm=True, alt=10.0))
@@ -255,6 +321,41 @@ async def test_mode_dry_run_reports_checks() -> None:
     assert response.result is not None
     assert response.result["would_execute"] is True
     assert any(c["name"] == "mode_known" for c in response.result["checks"])
+
+
+class _NoModeMapAdapter(FakeAdapter):
+    """Mode map never populated: set_mode must be structurally unreachable."""
+
+    def mode_names(self) -> list[str]:
+        return []
+
+    def set_mode(self, mode: str) -> CommandOutcome:
+        raise AssertionError("set_mode must not run when the mode map is unavailable")
+
+
+async def test_mode_map_unavailable_rejected_not_internal_error() -> None:
+    adapter = _NoModeMapAdapter(_state(mode="GUIDED"))
+    server = DaemonServer(adapter, "udp:127.0.0.1:14550")
+    response = await server._dispatch(_params(method="mode", mode="LOITER", confirm=True))
+
+    assert response.ok is False
+    assert response.error is not None
+    # Structured, recoverable safety rejection (exit 5) — never exit 1.
+    assert response.error.code == ExitCode.SAFETY_REJECTED
+    assert response.error.detail["reason"] == "mode_map_unavailable"
+    assert response.error.detail["hint"]
+    assert "internal" not in (response.error.message or "").lower()
+    assert adapter.calls == []  # set_mode was never reached
+
+
+async def test_mode_idempotent_noop_even_with_empty_mode_map() -> None:
+    adapter = _NoModeMapAdapter(_state(mode="LOITER"))
+    server = DaemonServer(adapter, "udp:127.0.0.1:14550")
+    response = await server._dispatch(_params(method="mode", mode="LOITER", confirm=True))
+    assert response.ok is True
+    assert response.result is not None
+    assert response.result["already_satisfied"] is True
+    assert adapter.calls == []
 
 
 # -- IN_PROGRESS semantics (P1) --------------------------------------------
@@ -329,7 +430,7 @@ class _BlockingArmAdapter(FakeAdapter):
         self.started = threading.Event()
         self.release = threading.Event()
 
-    def arm(self, force: bool = False) -> CommandOutcome:
+    def arm(self) -> CommandOutcome:
         self.started.set()
         self.release.wait(5.0)
         return CommandOutcome.from_ack(0, 1)

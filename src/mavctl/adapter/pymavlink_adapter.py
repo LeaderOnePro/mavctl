@@ -77,7 +77,8 @@ _LANDED_STATE_LABELS = {
 # Sentinels used by MAVLink to mean "field not populated".
 _UINT16_MAX = 65535
 
-# Magic param2 value that forces (dis)arming past pre-arm checks.
+# Magic param2 value for a forced DISARM (emergency motor stop). Arm never
+# sends it: there is no force-arm path in mavctl by design.
 _FORCE_ARM_MAGIC = 21196.0
 
 
@@ -243,10 +244,12 @@ class PymavlinkAdapter:
     def mode_names(self) -> list[str]:
         return sorted(self._mode_mapping().keys())
 
-    def arm(self, force: bool = False) -> CommandOutcome:
+    def arm(self) -> CommandOutcome:
+        # param2 stays 0.0 unconditionally: mavctl never sends the 21196 magic
+        # that would bypass the autopilot's pre-arm checks.
         return self._send_command(
             mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM,
-            [1.0, _FORCE_ARM_MAGIC if force else 0.0],
+            [1.0, 0.0],
         )
 
     def disarm(self, force: bool = False) -> CommandOutcome:

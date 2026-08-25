@@ -241,13 +241,18 @@ def test_arm_accepted() -> None:
     assert params[0] == 1.0
 
 
-def test_arm_force_sets_magic() -> None:
+def test_arm_sends_unconditional_param2_zero() -> None:
+    """arm() must never send the 21196 magic: pre-arm checks are not bypassable."""
+
     adapter, master = _cmd_adapter()
     _wire_acks(adapter, master, [0])
-    adapter.arm(force=True)
+    outcome = adapter.arm()
 
-    _command, _conf, params = master.sent[0]
-    assert params[1] == 21196.0
+    assert outcome.accepted is True
+    command, _conf, params = master.sent[0]
+    assert command == mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM
+    assert params[0] == 1.0
+    assert params[1] == 0.0
 
 
 def test_command_nack() -> None:
