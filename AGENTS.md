@@ -33,6 +33,21 @@ designed to be driven by AI coding agents (Claude Code, Codex, etc.) as well as 
 - 错误信息输出到 stderr，JSON 模式下为 `{"error": {...}}`
 - 每个公共函数写类型注解；不写无意义的注释
 
+## 设计原则（Phase 2 起贯彻，与铁律同等约束力）
+
+- **异步操作语义**：所有会改变载具状态且需要时间完成的命令
+  （takeoff / land / rtl / mode 等）必须支持两种模式：
+  - 默认：发出指令并确认飞控 ACK 后立即返回
+  - `--wait`：阻塞直到目标状态达成（如到达目标高度、完成降落），
+    配套 `--timeout <秒>`（默认 60），超时返回退出码 6
+- **status 输出自描述**：`mavctl status` 的输出必须让 agent 单次查询
+  就能重建对载具的完整认知，至少包含：connected、armed、mode、
+  system_status、relative_alt、landed_state（若可用）、battery、
+  gps_fix、home_position（若已设置）
+- **幂等友好**：重复执行已达成的状态变更应返回成功而非报错
+  （如对已 armed 的载具执行 arm，返回 exit 0 并在输出中标注
+  "already armed"），确保 agent 重试时不被绊倒
+
 ## 测试要求
 
 - Adapter 层：用 mock MAVLink 连接做单元测试

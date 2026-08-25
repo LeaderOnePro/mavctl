@@ -105,7 +105,8 @@ def spawn(connection_string: str, heartbeat_timeout: float, startup_timeout: flo
         exit_code = proc.poll()
         if exit_code is not None:
             raise RuntimeError(
-                f"daemon exited during startup (code {exit_code}); see {log_path()}"
+                f"daemon exited during startup (code {exit_code}): "
+                f"{_last_log_reason()} (full log: {log_path()})"
             )
         if is_daemon_running():
             return proc.pid
@@ -113,6 +114,17 @@ def spawn(connection_string: str, heartbeat_timeout: float, startup_timeout: flo
 
     proc.terminate()
     raise RuntimeError(f"daemon did not become ready within {startup_timeout:.0f}s")
+
+
+def _last_log_reason() -> str:
+    """Best-effort: the last non-empty line of the daemon log (usually the
+    exception message), so startup failures are self-explanatory."""
+
+    try:
+        lines = [ln.strip() for ln in log_path().read_text().splitlines() if ln.strip()]
+    except OSError:
+        return "no log available"
+    return lines[-1] if lines else "no log output"
 
 
 def stop(term_timeout: float = 8.0) -> bool:

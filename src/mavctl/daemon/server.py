@@ -5,38 +5,58 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import signal
-from typing import TYPE_CHECKING
+from collections.abc import Awaitable, Callable
+from typing import Any
 
-from mavctl.adapter.base import VehicleAdapter
-from mavctl.daemon import wire
-from mavctl.models import DaemonResponse, ExitCode, RpcRequest
+from mavctl.adapter.base import AdapterError, VehicleAdapter
+from mavctl.daemon import guards, wire
+from mavctl.daemon.guards import GuardConfig, GuardDecision
+from mavctl.models import CommandOutcome, DaemonResponse, ExitCode, RpcRequest
 from mavctl.paths import runtime_dir, socket_path
-
-if TYPE_CHECKING:
-    from collections.abc import Callable
 
 # Max bytes accepted for a single request frame (defensive bound).
 _MAX_FRAME = 64 * 1024
+
+# Default --wait timeout in seconds when the client does not specify one.
+_DEFAULT_WAIT_TIMEOUT = 60.0
+
+# Fraction of target altitude that counts as "takeoff reached".
+_TAKEOFF_REACHED_FRACTION = 0.95
+
+Handler = Callable[[RpcRequest], Awaitable[DaemonResponse]]
 
 
 class DaemonServer:
     """Serves RPC requests over a Unix socket, backed by a vehicle adapter.
 
     The adapter maintains the live MAVLink snapshot on its own reader thread;
-    the server's request handlers only perform cheap snapshot reads, so no
-    handler blocks the event loop.
+    fast handlers (ping/status/telemetry) only read that snapshot, while
+    command handlers run the blocking adapter verbs in an executor so the
+    event loop stays responsive.
     """
 
-    def __init__(self, adapter: VehicleAdapter, connection_string: str) -> None:
+    def __init__(
+        self,
+        adapter: VehicleAdapter,
+        connection_string: str,
+        guard_config: GuardConfig | None = None,
+    ) -> None:
         self._adapter = adapter
         self._connection_string = connection_string
+        self._guard_config = guard_config or GuardConfig()
         self._stop_event = asyncio.Event()
         self._server: asyncio.AbstractServer | None = None
-        self._methods: dict[str, Callable[[RpcRequest], DaemonResponse]] = {
+        self._methods: dict[str, Handler] = {
             "ping": self._m_ping,
             "status": self._m_status,
             "telemetry": self._m_telemetry,
             "shutdown": self._m_shutdown,
+            "arm": self._m_arm,
+            "disarm": self._m_disarm,
+            "mode": self._m_mode,
+            "takeoff": self._m_takeoff,
+            "land": self._m_land,
+            "rtl": self._m_rtl,
         }
 
     async def serve(self) -> None:
@@ -69,7 +89,7 @@ class DaemonServer:
             line = await reader.readline()
             if not line or len(line) > _MAX_FRAME:
                 return
-            response = self._dispatch(line)
+            response = await self._dispatch(line)
             writer.write(wire.encode(response.model_dump()))
             await writer.drain()
         except (ConnectionError, asyncio.IncompleteReadError):
@@ -79,7 +99,7 @@ class DaemonServer:
             with contextlib.suppress(ConnectionError, asyncio.CancelledError):
                 await writer.wait_closed()
 
-    def _dispatch(self, line: bytes) -> DaemonResponse:
+    async def _dispatch(self, line: bytes) -> DaemonResponse:
         try:
             request = RpcRequest.model_validate(wire.decode(line))
         except (ValueError, TypeError) as exc:
@@ -91,33 +111,244 @@ class DaemonServer:
                 ExitCode.GENERAL_ERROR, f"unknown method: {request.method!r}"
             )
         try:
-            return handler(request)
+            return await handler(request)
         except Exception as exc:
             return DaemonResponse.failure(ExitCode.GENERAL_ERROR, f"internal error: {exc}")
 
-    # -- RPC methods -------------------------------------------------------
+    # -- fast RPC methods --------------------------------------------------
 
-    def _m_ping(self, _request: RpcRequest) -> DaemonResponse:
+    async def _m_ping(self, _request: RpcRequest) -> DaemonResponse:
         return DaemonResponse.success(
             {"pong": True, "connection_string": self._connection_string}
         )
 
-    def _m_status(self, _request: RpcRequest) -> DaemonResponse:
+    async def _m_status(self, _request: RpcRequest) -> DaemonResponse:
         return DaemonResponse.success(self._adapter.get_state().model_dump())
 
-    def _m_telemetry(self, _request: RpcRequest) -> DaemonResponse:
+    async def _m_telemetry(self, _request: RpcRequest) -> DaemonResponse:
         state = self._adapter.get_state()
         if not state.connected:
-            return DaemonResponse.failure(
-                ExitCode.VEHICLE_NOT_CONNECTED,
-                "vehicle not connected (no recent heartbeat)",
-                {"connection_string": self._connection_string},
-            )
+            return self._not_connected()
         return DaemonResponse.success(self._adapter.get_telemetry().model_dump())
 
-    def _m_shutdown(self, _request: RpcRequest) -> DaemonResponse:
+    async def _m_shutdown(self, _request: RpcRequest) -> DaemonResponse:
         self.request_stop()
         return DaemonResponse.success({"stopping": True})
+
+    # -- command RPC methods ----------------------------------------------
+
+    async def _m_arm(self, request: RpcRequest) -> DaemonResponse:
+        p = request.params
+        state = self._adapter.get_state()
+        decision = guards.check_arm(state, confirm=_flag(p, "confirm"), config=self._guard_config)
+        pre = self._pre_execute(decision, dry_run=_flag(p, "dry_run"))
+        if pre is not None:
+            return pre
+        outcome = await self._blocking(self._adapter.arm, _flag(p, "force"))
+        return self._command_result("arm", outcome)
+
+    async def _m_disarm(self, request: RpcRequest) -> DaemonResponse:
+        p = request.params
+        state = self._adapter.get_state()
+        decision = guards.check_disarm(
+            state, confirm=_flag(p, "confirm"), force=_flag(p, "force"), config=self._guard_config
+        )
+        pre = self._pre_execute(decision, dry_run=_flag(p, "dry_run"))
+        if pre is not None:
+            return pre
+        outcome = await self._blocking(self._adapter.disarm, _flag(p, "force"))
+        return self._command_result("disarm", outcome)
+
+    async def _m_mode(self, request: RpcRequest) -> DaemonResponse:
+        p = request.params
+        mode = str(p.get("mode", "")).upper()
+        state = self._adapter.get_state()
+        decision = guards.check_mode(
+            state,
+            mode,
+            self._adapter.mode_names(),
+            confirm=_flag(p, "confirm"),
+            config=self._guard_config,
+        )
+        pre = self._pre_execute(decision, dry_run=_flag(p, "dry_run"))
+        if pre is not None:
+            return pre
+        outcome = await self._blocking(self._adapter.set_mode, mode)
+        if not outcome.accepted:
+            return self._command_result("mode", outcome)
+        waited = await self._maybe_wait(
+            p, lambda: self._adapter.get_state().flight_mode == mode
+        )
+        if waited is False:
+            return self._wait_timeout("mode", outcome, p, f"mode did not switch to {mode}")
+        return self._command_result("mode", outcome, waited=waited)
+
+    async def _m_takeoff(self, request: RpcRequest) -> DaemonResponse:
+        p = request.params
+        alt_raw = p.get("alt")
+        if alt_raw is None:
+            return DaemonResponse.failure(ExitCode.USAGE_ERROR, "takeoff requires numeric --alt")
+        try:
+            alt = float(alt_raw)
+        except (TypeError, ValueError):
+            return DaemonResponse.failure(ExitCode.USAGE_ERROR, "takeoff requires numeric --alt")
+        state = self._adapter.get_state()
+        decision = guards.check_takeoff(
+            state, alt, confirm=_flag(p, "confirm"), config=self._guard_config
+        )
+        pre = self._pre_execute(decision, dry_run=_flag(p, "dry_run"))
+        if pre is not None:
+            return pre
+        outcome = await self._blocking(self._adapter.takeoff, alt)
+        if not outcome.accepted:
+            return self._command_result("takeoff", outcome)
+        target = alt * _TAKEOFF_REACHED_FRACTION
+        waited = await self._maybe_wait(p, lambda: self._reached_altitude(target))
+        if waited is False:
+            return self._wait_timeout(
+                "takeoff", outcome, p, f"altitude {target:.1f}m not reached"
+            )
+        return self._command_result("takeoff", outcome, waited=waited)
+
+    async def _m_land(self, request: RpcRequest) -> DaemonResponse:
+        return await self._m_descent(request, "land", self._adapter.land)
+
+    async def _m_rtl(self, request: RpcRequest) -> DaemonResponse:
+        return await self._m_descent(request, "rtl", self._adapter.rtl)
+
+    async def _m_descent(
+        self, request: RpcRequest, action: str, verb: Callable[[], CommandOutcome]
+    ) -> DaemonResponse:
+        p = request.params
+        state = self._adapter.get_state()
+        decision = (
+            guards.check_land(state, confirm=_flag(p, "confirm"), config=self._guard_config)
+            if action == "land"
+            else guards.check_rtl(state, confirm=_flag(p, "confirm"), config=self._guard_config)
+        )
+        pre = self._pre_execute(decision, dry_run=_flag(p, "dry_run"))
+        if pre is not None:
+            return pre
+        outcome = await self._blocking(verb)
+        if not outcome.accepted:
+            return self._command_result(action, outcome)
+        waited = await self._maybe_wait(p, lambda: self._adapter.get_state().armed is False)
+        if waited is False:
+            return self._wait_timeout(action, outcome, p, "vehicle did not disarm")
+        return self._command_result(action, outcome, waited=waited)
+
+    # -- helpers -----------------------------------------------------------
+
+    def _not_connected(self) -> DaemonResponse:
+        return DaemonResponse.failure(
+            ExitCode.VEHICLE_NOT_CONNECTED,
+            "vehicle not connected (no recent heartbeat)",
+            {"connection_string": self._connection_string},
+        )
+
+    def _pre_execute(self, decision: GuardDecision, *, dry_run: bool) -> DaemonResponse | None:
+        """Return a terminal response for dry-run/reject/idempotent, else None."""
+
+        checks = [c.model_dump() for c in decision.checks]
+        if dry_run:
+            if not decision.allowed:
+                return DaemonResponse.failure(
+                    decision.exit_code,
+                    decision.message or "would be rejected",
+                    {
+                        "dry_run": True,
+                        "reason": decision.reason,
+                        "hint": decision.hint,
+                        "checks": checks,
+                    },
+                )
+            return DaemonResponse.success(
+                {
+                    "dry_run": True,
+                    "action": decision.action,
+                    "would_execute": not decision.already_satisfied,
+                    "already_satisfied": decision.already_satisfied,
+                    "note": decision.note,
+                    "checks": checks,
+                }
+            )
+        if not decision.allowed:
+            return DaemonResponse.failure(
+                decision.exit_code,
+                decision.message or "rejected by safety guard",
+                {"reason": decision.reason, "hint": decision.hint, "checks": checks},
+            )
+        if decision.already_satisfied:
+            return DaemonResponse.success(
+                {
+                    "action": decision.action,
+                    "already_satisfied": True,
+                    "note": decision.note,
+                    "executed": False,
+                }
+            )
+        return None
+
+    async def _blocking(self, fn: Callable[..., CommandOutcome], *args: Any) -> CommandOutcome:
+        loop = asyncio.get_running_loop()
+        try:
+            return await loop.run_in_executor(None, fn, *args)
+        except AdapterError as exc:
+            return CommandOutcome(accepted=False, result_name=f"ADAPTER_ERROR: {exc}")
+
+    def _command_result(
+        self,
+        action: str,
+        outcome: CommandOutcome,
+        *,
+        note: str | None = None,
+        waited: bool | None = None,
+    ) -> DaemonResponse:
+        if not outcome.accepted:
+            return DaemonResponse.failure(
+                ExitCode.NACK_TIMEOUT,
+                f"{action} not accepted by vehicle: {outcome.result_name}",
+                {"outcome": outcome.model_dump()},
+            )
+        result: dict[str, Any] = {
+            "action": action,
+            "executed": True,
+            "outcome": outcome.model_dump(),
+        }
+        if note is not None:
+            result["note"] = note
+        if waited is not None:
+            result["waited"] = waited
+        return DaemonResponse.success(result)
+
+    async def _maybe_wait(
+        self, params: dict[str, Any], predicate: Callable[[], bool]
+    ) -> bool | None:
+        """Return None if not waiting, else True/False for reached/timed-out."""
+
+        if not _flag(params, "wait"):
+            return None
+        timeout = _timeout(params)
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        while loop.time() < deadline:
+            if predicate():
+                return True
+            await asyncio.sleep(0.25)
+        return predicate()
+
+    def _wait_timeout(
+        self, action: str, outcome: CommandOutcome, params: dict[str, Any], detail: str
+    ) -> DaemonResponse:
+        return DaemonResponse.failure(
+            ExitCode.NACK_TIMEOUT,
+            f"{action} accepted but did not complete within {_timeout(params):.0f}s: {detail}",
+            {"outcome": outcome.model_dump(), "waited": False},
+        )
+
+    def _reached_altitude(self, target: float) -> bool:
+        rel = self._adapter.get_telemetry().position.relative_alt_m
+        return rel is not None and rel >= target
 
     # -- teardown ----------------------------------------------------------
 
@@ -136,3 +367,15 @@ class DaemonServer:
         self._adapter.disconnect()
         with contextlib.suppress(FileNotFoundError):
             socket_path().unlink()
+
+
+def _flag(params: dict[str, Any], key: str) -> bool:
+    return bool(params.get(key, False))
+
+
+def _timeout(params: dict[str, Any]) -> float:
+    value = params.get("timeout")
+    try:
+        return float(value) if value is not None else _DEFAULT_WAIT_TIMEOUT
+    except (TypeError, ValueError):
+        return _DEFAULT_WAIT_TIMEOUT
