@@ -14,6 +14,7 @@ from pathlib import Path
 _ROOT = Path(__file__).resolve().parent.parent
 _README = (_ROOT / "README.md").read_text(encoding="utf-8")
 _PYPROJECT = (_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+_PUBLISHING = (_ROOT / "docs" / "PUBLISHING.md").read_text(encoding="utf-8")
 _WORKFLOW = (_ROOT / ".github" / "workflows" / "publish.yml").read_text(encoding="utf-8")
 
 _SUPPORTED_COMMANDS = frozenset(
@@ -115,6 +116,12 @@ def test_planned_pypi_install_is_clearly_marked_unavailable() -> None:
     assert seen_install_command, "README must list the planned PyPI install commands"
 
 
+def test_readme_still_describes_pypi_install_as_unavailable() -> None:
+    assert "Planned PyPI install (not available yet)" in _README
+    assert "PyPI publishing is being prepared" in _README
+    assert "the package is not published" in _README
+
+
 # -- packaging metadata ------------------------------------------------------
 
 
@@ -132,6 +139,35 @@ def test_pyproject_packaging_metadata_is_release_ready_shape() -> None:
     license_text = (_ROOT / "LICENSE").read_text(encoding="utf-8")
     assert "MIT License" in license_text
     assert "LeaderOnePro" in license_text
+
+
+# -- publishing docs ---------------------------------------------------------
+
+
+def test_publishing_doc_states_production_release_pending() -> None:
+    assert "prepared, not yet published" in _PUBLISHING
+    assert "has been released on production PyPI" in _PUBLISHING
+
+
+def test_testpypi_rehearsal_is_recorded() -> None:
+    assert "## TestPyPI rehearsal record" in _PUBLISHING
+    assert "2026-08-26" in _PUBLISHING
+    assert "0.2.0.dev0" in _PUBLISHING
+    assert "0.2.0.dev1" in _PUBLISHING
+
+
+def test_publishing_doc_contains_no_token_material() -> None:
+    # Real PyPI/TestPyPI API tokens start with "pypi-" — never even in examples.
+    assert "pypi-" not in _PUBLISHING
+    # Credential assignments may appear only with an obvious <PLACEHOLDER> value.
+    assert re.search(r"UV_PUBLISH_PASSWORD=(?!<[A-Z_]+>)", _PUBLISHING) is None
+    # Wherever the __token__ username appears, any following password assignment
+    # must also be a placeholder — never a concrete credential.
+    for match in re.finditer(r"UV_PUBLISH_USERNAME=__token__", _PUBLISHING):
+        tail = _PUBLISHING[match.end() :]
+        follow = re.search(r"UV_PUBLISH_PASSWORD=(\S*)", tail)
+        if follow is not None:
+            assert follow.group(1).startswith("<"), follow.group(0)
 
 
 # -- publish workflow --------------------------------------------------------
