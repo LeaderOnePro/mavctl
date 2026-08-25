@@ -1,10 +1,10 @@
 """Consistency tests binding README, packaging metadata and the publish workflow.
 
 These tests keep the public entry documents honest about what mavctl can do
-today: the README must document only real commands and describe the PyPI
-channel conditionally (never claiming an already-published production release
-or equating TestPyPI rehearsals with one), and the publish workflow must
-refuse anything but formal vX.Y.Z release tags.
+today: the README must document only real commands and state the PyPI channel
+accurately (the published production release is 0.2.0 — no other version may
+be claimed as released), and the publish workflow must refuse anything but
+formal vX.Y.Z release tags.
 """
 
 from __future__ import annotations
@@ -31,12 +31,9 @@ _FORCE_ARM_INVOCATION = re.compile(r"mavctl\s+arm\b[^\n]*--force", re.IGNORECASE
 
 _PYPI_INSTALL_COMMANDS = ("uv tool install mavctl", "uvx mavctl", "pipx install mavctl")
 
-
-# A claim that production PyPI already serves mavctl — never allowed, the
-# release is only *prepared* until tag v0.2.0 is pushed and published.
-_PUBLISHED_ON_PYPI_CLAIM = re.compile(
-    r"\b(?:is|are|has\s+been)\s+(?:now\s+)?"
-    r"(?:available|published|released|live)\s+on\s+PyPI\b",
+# "mavctl X.Y.Z is published on production PyPI" — only 0.2.0 may ever match.
+_VERSIONED_PUBLISHED_CLAIM = re.compile(
+    r"\bmavctl\s+(\d+\.\d+\.\d+)\s+(?:is|has\s+been)\s+published\s+on\s+production",
     re.IGNORECASE,
 )
 
@@ -115,22 +112,23 @@ def test_readme_documents_the_pypi_install_channels() -> None:
         assert command in _README, command
 
 
-def test_readme_pypi_wording_is_release_aware() -> None:
-    # Instructions are conditional on the actual release…
-    assert re.search(
-        r"after the\s+PyPI release is published", _README, re.IGNORECASE
-    ), "install commands must be gated on the release being published"
-    # …TestPyPI rehearsals must never be presented as production releases…
-    assert re.search(
-        r"rehearsal artifacts are not production releases", _README, re.IGNORECASE
-    )
-    equivalence = re.search(
-        r"TestPyPI[^.\n]*(?:same as|identical to|equals)", _README, re.IGNORECASE
-    )
-    assert equivalence is None, equivalence.group(0) if equivalence else ""
-    # …and no wording may claim mavctl is already served by production PyPI.
-    claim = _PUBLISHED_ON_PYPI_CLAIM.search(_README)
-    assert claim is None, claim.group(0) if claim else ""
+def test_readme_states_pypi_install_availability() -> None:
+    assert "## Install from PyPI" in _README
+    assert "mavctl 0.2.0 is published on production PyPI" in _README
+    # Stale pre-release wording must not survive the release.
+    for stale in ("not available yet", "package is not published", "is being prepared"):
+        assert stale not in _README, stale
+    # The README speaks only about the production channel — rehearsal history
+    # lives in docs/PUBLISHING.md.
+    assert "TestPyPI" not in _README
+
+
+def test_only_the_released_version_is_claimed_published() -> None:
+    claimed = {
+        match.group(1)
+        for match in _VERSIONED_PUBLISHED_CLAIM.finditer(f"{_README}\n{_PUBLISHING}")
+    }
+    assert claimed == {"0.2.0"}, claimed
 
 
 # -- packaging metadata ------------------------------------------------------
@@ -155,18 +153,26 @@ def test_pyproject_packaging_metadata_is_release_ready_shape() -> None:
 # -- publishing docs ---------------------------------------------------------
 
 
-def test_publishing_doc_states_production_release_pending() -> None:
-    assert "prepared, not yet published" in _PUBLISHING
+def test_testpypi_record_keeps_denying_production_equivalence() -> None:
+    # Historical rehearsal record: it was a rehearsal, never a production release.
     assert "has been released on production PyPI" in _PUBLISHING
 
 
-def test_publishing_doc_tracks_pre_v020_release_state() -> None:
-    assert "## Release state before v0.2.0" in _PUBLISHING
+def test_publishing_doc_records_production_release() -> None:
+    assert "mavctl 0.2.0 is published on production PyPI" in _PUBLISHING
+    assert "Production PyPI release: mavctl 0.2.0" in _PUBLISHING
+    assert "Released: 2026-08-26" in _PUBLISHING
+    assert "GitHub Actions OIDC Trusted Publishing" in _PUBLISHING
+    assert "wheel and sdist" in _PUBLISHING
+    assert "clean-venv install" in _PUBLISHING
+    # Forward-only versioning guidance for the next release cycle.
+    assert "0.2.1.dev0" in _PUBLISHING
+    assert "0.3.0.dev0" in _PUBLISHING
+    # Whitespace-normalized: the sentence wraps across source lines.
     assert (
-        "tag v0.2.0 has been pushed successfully" in _PUBLISHING
-    ), "the doc must gate publication on the tag actually being pushed"
-    claim = _PUBLISHED_ON_PYPI_CLAIM.search(_PUBLISHING)
-    assert claim is None, claim.group(0) if claim else ""
+        "Never re-publish an existing version number"
+        in " ".join(_PUBLISHING.split())
+    )
 
 
 def test_testpypi_rehearsal_is_recorded() -> None:

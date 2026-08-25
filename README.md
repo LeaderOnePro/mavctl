@@ -110,25 +110,23 @@ Safety notes — read before pointing mavctl at anything that flies:
 - There is no `arm --force` anywhere in mavctl; pre-arm checks cannot be
   bypassed.
 
-## Installation
+## Install from PyPI
 
-### From PyPI
-
-mavctl's first production release (`0.2.0`) is being prepared. After the
-PyPI release is published, install with:
+mavctl 0.2.0 is published on production PyPI. Install with:
 
 ```bash
 uv tool install mavctl
+# or run once without a persistent install:
 uvx mavctl --help
+# or:
 pipx install mavctl
 ```
 
-Until that release is published these commands have nothing to fetch from
-production PyPI; TestPyPI rehearsal artifacts are not production releases.
-Release status and the publishing runbook live in
+Before pointing mavctl at anything that flies, walk through the SITL-first
+quickstart above. Release history and the publishing runbook live in
 [docs/PUBLISHING.md](docs/PUBLISHING.md).
 
-### From source
+## Install from source
 
 For development from source, use `uv sync` and `uv run mavctl …`:
 
