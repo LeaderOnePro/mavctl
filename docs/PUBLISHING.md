@@ -1,7 +1,8 @@
 # Publishing mavctl to PyPI
 
-Status: **prepared, not yet published**. This is the operator runbook for
-cutting real releases; none of it has executed end-to-end yet.
+Status: **released** — mavctl 0.2.0 is published on production PyPI
+(2026-08-26). This document remains the operator runbook for every future
+release.
 
 ## Package name
 
@@ -13,20 +14,26 @@ PyPI JSON API returned 404 for `pypi.org/pypi/mavctl/json`).
 
 ## Version scheme
 
-- `pyproject.toml` carries `0.2.0.dev0`: a PEP 440 development version marking
-  unreleased work toward 0.2.0 (main already contains the phase-2 safety
-  hardening; `0.1.0` was never published to PyPI).
+- Between releases, `pyproject.toml` carries the next PEP 440 development
+  version; for a release commit the `.devN` suffix is dropped before tagging.
 - Git tags come in two kinds:
   - `v0.2.0-phase2` is a **Git milestone tag, not a PyPI release tag.**
   - Release tags are strictly `vX.Y.Z` (e.g. `v0.2.0`). The publish workflow
     rejects every other shape and additionally cross-checks that the tag
-    equals the package version, so the `.dev0` suffix must be dropped in a
-    release commit before tagging.
+    equals the package version.
+- The published `0.2.0` is immutable on PyPI. Future cycles move strictly
+  forward from it: develop against `0.2.1.dev0` (patch) or `0.3.0.dev0`
+  (feature/minor) and release later as `0.2.1` / `0.3.0`. Never re-publish an
+  existing version number.
 
-## Release state before v0.2.0
+## Production release record
 
-This branch prepares version 0.2.0. Production publication has not happened
-until main contains this version and tag v0.2.0 has been pushed successfully.
+Production PyPI release: mavctl 0.2.0
+
+- Released: 2026-08-26
+- Publishing method: GitHub Actions OIDC Trusted Publishing
+- Published artifacts: wheel and sdist
+- Verification: clean-venv install, `mavctl --help`, `mavctl daemon --help`
 
 ## First-release checklist (v0.2.0)
 
@@ -42,15 +49,16 @@ Done:
 - Landed the release commit changing `version` to `0.2.0` on the
   `release/0.2.0` branch and opened the release PR.
 
-Remaining — strictly in this order:
+Completed on 2026-08-26, strictly in this order:
 
-1. Merge the release PR into main.
-2. Only then create and push annotated tag `v0.2.0`
-   (`git tag -a v0.2.0 && git push origin v0.2.0`). The formal tag does not
-   exist yet.
-3. Watch the GitHub Actions run (`Publish to PyPI`) validate tag/version and
-   publish over OIDC.
-4. Verify installation in a clean environment with `uvx mavctl --help`.
+1. Merged the release PR into main.
+2. Created and pushed annotated tag `v0.2.0`.
+3. The GitHub Actions run (`Publish to PyPI`) validated tag/version and
+   published over OIDC.
+4. Verified installation in a clean environment with `uvx mavctl --help`.
+
+For the next release, start from the version-scheme rules above and reuse
+this checklist with the new version number.
 
 ## Trusted Publisher configuration (manual, one-time)
 
@@ -126,8 +134,9 @@ there affects real PyPI. Recommended dry run before the first real release:
 - A clean temporary virtual environment installed `mavctl==0.2.0.dev0` from
   TestPyPI, with dependencies resolved from PyPI.
 - Smoke checks passed: `mavctl --help` and `mavctl daemon --help`.
-- This does **not** mean mavctl has been released on production PyPI; the
-  status at the top of this document still applies.
+- This does **not** mean mavctl has been released on production PyPI;
+  production publication happened later — see the production release record
+  above.
 - TestPyPI does not permit re-uploading the same distribution version, so a
   future rehearsal needs a new version such as `0.2.0.dev1`.
 
