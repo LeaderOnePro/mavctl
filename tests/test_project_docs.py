@@ -14,7 +14,7 @@ from pathlib import Path
 
 _ROOT = Path(__file__).resolve().parent.parent
 _README = (_ROOT / "README.md").read_text(encoding="utf-8")
-_ZH_README = (_ROOT / "README.zh-CN.md").read_text(encoding="utf-8")
+_ZH_README = (_ROOT / "README_ZH.md").read_text(encoding="utf-8")
 _PYPROJECT = (_ROOT / "pyproject.toml").read_text(encoding="utf-8")
 _PUBLISHING = (_ROOT / "docs" / "PUBLISHING.md").read_text(encoding="utf-8")
 _WORKFLOW = (_ROOT / ".github" / "workflows" / "publish.yml").read_text(encoding="utf-8")
@@ -37,7 +37,7 @@ _VERSIONED_PUBLISHED_CLAIM = re.compile(
     r"\bmavctl\s+(\d+\.\d+\.\d+)\s+(?:is|has\s+been)\s+published\s+on\s+production",
     re.IGNORECASE,
 )
-# Chinese counterpart in README.zh-CN.md: "mavctl X.Y.Z 已发布到正式 PyPI".
+# Chinese counterpart in README_ZH.md: "mavctl X.Y.Z 已发布到正式 PyPI".
 _CHINESE_VERSIONED_PUBLISHED_CLAIM = re.compile(
     r"\bmavctl\s+(\d+\.\d+\.\d+)\s+已(?:经)?发布(?:到|至|于)正式"
 )
@@ -135,7 +135,7 @@ def test_only_the_released_version_is_claimed_published() -> None:
     assert claimed == {"0.2.0"}, claimed
 
 
-# -- Chinese README (README.zh-CN.md) ----------------------------------------
+# -- Chinese README (README_ZH.md) -------------------------------------------
 #
 # The translation is bound to the same honesty invariants as the English
 # README: real commands only, no unimplemented capability invocations, no
@@ -144,26 +144,26 @@ def test_only_the_released_version_is_claimed_published() -> None:
 
 def test_chinese_readme_cross_links_the_english_readme() -> None:
     assert "[English](README.md)" in _ZH_README
-    assert "README.zh-CN.md" in _README
+    assert "README_ZH.md" in _README
 
 
 def test_chinese_readme_documents_only_real_commands() -> None:
     for chunk in _code_chunks(_ZH_README):
         for line in chunk.splitlines():
             for command in _MAVCTL_INVOCATION.findall(line):
-                assert command in _SUPPORTED_COMMANDS, f"README.zh-CN: mavctl {command}"
+                assert command in _SUPPORTED_COMMANDS, f"README_ZH: mavctl {command}"
 
 
 def test_chinese_readme_never_invokes_unimplemented_capabilities() -> None:
     for chunk in _code_chunks(_ZH_README):
         for line in chunk.splitlines():
             match = _UNSUPPORTED_INVOCATION.search(line)
-            assert match is None, f"README.zh-CN: invoked {match.group(0)!r}"
+            assert match is None, f"README_ZH: invoked {match.group(0)!r}"
 
 
 def test_chinese_readme_never_shows_a_force_arm_invocation() -> None:
     match = _FORCE_ARM_INVOCATION.search(_ZH_README)
-    assert match is None, f"README.zh-CN: {match.group(0)!r}"
+    assert match is None, f"README_ZH: {match.group(0)!r}"
 
 
 def test_chinese_readme_quickstart_covers_the_safe_workflow() -> None:

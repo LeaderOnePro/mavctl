@@ -1,6 +1,6 @@
 # mavctl
 
-English | [简体中文](README.zh-CN.md)
+English | [简体中文](README_ZH.md)
 
 > Headless, agent-first MAVLink ground-control CLI for ArduPilot vehicles.
 
