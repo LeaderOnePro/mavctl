@@ -137,17 +137,27 @@ uv run mavctl --help
 workflows / safety / troubleshooting 参考文档）。它是本仓库的源资产，不属于
 安装包的一部分。
 
-要在某个 agent 运行时中使用它，请按照该运行时当前的 Skill 发现约定安装或
-软链此目录。
+社区 skills CLI 可以直接从本仓库安装（已在 `skills` 1.5.23 上实测，见
+[docs/SKILLS_CLI_ACCEPTANCE.md](docs/SKILLS_CLI_ACCEPTANCE.md)）：
 
-以 Claude Code 为例（项目本地、作用于本仓库）：
+```bash
+npx skills add LeaderOnePro/mavctl -s mavctl-flight -a claude-code -y
+```
+
+也可以从本地 checkout 安装到 CLI 检测到的所有 agent：
+
+```bash
+npx skills add /path/to/mavctl/skills/mavctl-flight --all --copy
+```
+
+零依赖的替代方式——手动软链（以 Claude Code 为例，项目本地、作用于本仓库）：
 
 ```bash
 mkdir -p .claude/skills
 ln -s ../../skills/mavctl-flight .claude/skills/mavctl-flight
 ```
 
-这只是一个具体示例，不是通用约定——各运行时并不相同。
+这些只是具体示例，不是通用约定——各运行时并不相同。
 
 ## 安全模型
 

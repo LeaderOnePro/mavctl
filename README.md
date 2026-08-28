@@ -145,17 +145,28 @@ The repository ships a portable agent Skill under `skills/mavctl-flight/`
 (entrypoint plus workflows / safety / troubleshooting references). It is a
 source asset of this repo, not an installed package.
 
-To use it with an agent runtime, install or symlink this directory according
-to that runtime's current Skill discovery convention.
+The community skills CLI can install it straight from this repository
+(verified against `skills` 1.5.23, see
+[docs/SKILLS_CLI_ACCEPTANCE.md](docs/SKILLS_CLI_ACCEPTANCE.md)):
 
-Example for Claude Code, project-local to this repository:
+```bash
+npx skills add LeaderOnePro/mavctl -s mavctl-flight -a claude-code -y
+```
+
+Or from a local checkout, into every agent the CLI detects:
+
+```bash
+npx skills add /path/to/mavctl/skills/mavctl-flight --all --copy
+```
+
+Zero-dependency alternative — symlink by hand, project-local for Claude Code:
 
 ```bash
 mkdir -p .claude/skills
 ln -s ../../skills/mavctl-flight .claude/skills/mavctl-flight
 ```
 
-That is one concrete example, not a universal convention — runtimes differ.
+These are concrete examples, not a universal convention — runtimes differ.
 
 ## Safety model
 

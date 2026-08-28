@@ -18,6 +18,7 @@ _ZH_README = (_ROOT / "README_ZH.md").read_text(encoding="utf-8")
 _PYPROJECT = (_ROOT / "pyproject.toml").read_text(encoding="utf-8")
 _PUBLISHING = (_ROOT / "docs" / "PUBLISHING.md").read_text(encoding="utf-8")
 _WORKFLOW = (_ROOT / ".github" / "workflows" / "publish.yml").read_text(encoding="utf-8")
+_SKILLS_ACCEPTANCE = (_ROOT / "docs" / "SKILLS_CLI_ACCEPTANCE.md").read_text(encoding="utf-8")
 
 _SUPPORTED_COMMANDS = frozenset(
     {"status", "telemetry", "arm", "disarm", "mode", "takeoff", "land", "rtl", "daemon"}
@@ -189,6 +190,29 @@ def test_chinese_readme_states_pypi_install_availability() -> None:
     # The README speaks only about the production channel — rehearsal history
     # lives in docs/PUBLISHING.md.
     assert "TestPyPI" not in _ZH_README
+
+
+# -- skills CLI install commands ---------------------------------------------
+
+
+def test_readmes_document_only_the_tested_skills_cli_install() -> None:
+    # The exact command verified in docs/SKILLS_CLI_ACCEPTANCE.md must appear
+    # in both READMEs; untested npx skills invocations must not be promised.
+    verified = "npx skills add LeaderOnePro/mavctl -s mavctl-flight -a claude-code -y"
+    for readme in (_README, _ZH_README):
+        assert verified in readme
+        for line in readme.splitlines():
+            for other in re.findall(r"npx skills add \S.*", line):
+                assert other.strip() == verified or other.strip().startswith(
+                    "npx skills add /path/to/"
+                ), other
+
+
+def test_skills_cli_acceptance_records_command_and_version() -> None:
+    assert "npx skills add LeaderOnePro/mavctl -s mavctl-flight -a claude-code -y" in (
+        _SKILLS_ACCEPTANCE
+    )
+    assert "1.5.23" in _SKILLS_ACCEPTANCE
 
 
 # -- packaging metadata ------------------------------------------------------
