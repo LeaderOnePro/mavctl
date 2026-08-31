@@ -73,6 +73,21 @@ and relative altitude is missing/stale. Correct responses:
 - only if you *intend* an emergency motor stop:
   `mavctl disarm --confirm --force` (may cause a crash in flight).
 
+## ground_state_stale (exit 5, disarm)
+
+Cached ground evidence exists (an `on_ground` report or a low relative
+altitude) but its freshness age is missing or older than the accepted window
+(default 3.0 s): stale cache is not *current* ground. Correct responses:
+
+- poll `mavctl status --json` until `telemetry_age_s` /
+  `landed_state_age_s` are fresh again, then retry `disarm --confirm`;
+- land first (`mavctl land --confirm --wait --timeout 90`) if in any doubt;
+- `--force` remains an emergency motor stop only — do not use it to skip a
+  staleness rejection.
+
+Only ordinary `disarm` checks evidence freshness; other commands' guards do
+not.
+
 ## mode_map_unavailable (exit 5, mode)
 
 The link is up but the vehicle's flight-mode table has not populated yet, so

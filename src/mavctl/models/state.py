@@ -35,6 +35,16 @@ class VehicleState(BaseModel):
     Designed to be self-describing: a single query should let an agent
     reconstruct its full picture of the vehicle. Every field is optional:
     before the first matching MAVLink message arrives its value is ``None``.
+
+    Freshness metadata (``*_age_s``) reports, per cached stream, the elapsed
+    seconds since the daemon last *accepted* a message of that class from the
+    locked autopilot source, computed on ``time.monotonic()`` (never epoch
+    wall-clock). ``None`` means the stream was never received. Ages keep
+    counting after the heartbeat goes stale, so the staleness of the cached
+    snapshot stays visible even on link loss. An age is a cache-staleness
+    indicator, not a physical measurement of data latency. Current guard
+    conditions are unchanged; future guards may use stream freshness as an
+    additional input.
     """
 
     connected: bool = False
@@ -51,3 +61,9 @@ class VehicleState(BaseModel):
     battery: Battery = Battery()
     gps: GpsInfo = GpsInfo()
     home_position: HomePosition | None = None
+    # Freshness per stream; None = message class never received.
+    telemetry_age_s: float | None = None
+    gps_age_s: float | None = None
+    battery_age_s: float | None = None
+    home_position_age_s: float | None = None
+    landed_state_age_s: float | None = None

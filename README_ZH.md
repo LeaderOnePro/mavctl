@@ -117,6 +117,12 @@ uvx mavctl --help
 pipx install mavctl
 ```
 
+验证安装——`mavctl --version` 不需要 daemon 或载具：
+
+```bash
+mavctl --version
+```
+
 在把 mavctl 指向任何会飞的东西之前，请先过一遍上面的 SITL 优先快速上手。
 发布历史与发布操作手册见 [docs/PUBLISHING.md](docs/PUBLISHING.md)。
 

@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import math
 
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 from mavctl.models import ExitCode, VehicleState
 
@@ -29,6 +29,13 @@ DEFAULT_MAX_HEARTBEAT_AGE_S = 3.0
 # "on the ground" for disarm. Deliberately far below the airborne threshold:
 # altitudes between the two are treated as UNKNOWN, not as ground.
 DEFAULT_MAX_ON_GROUND_ALT_M = 0.5
+# Maximum age of cached ground evidence an *ordinary* (non-force) disarm
+# accepts as proof of "on the ground": a ``landed_state == "on_ground"``
+# report counts only while ``landed_state_age_s`` is within this window, and
+# a low known relative altitude only while ``telemetry_age_s`` is. Stale
+# cache is not current ground — refusal is the safe direction. Must be a
+# finite, non-negative number of seconds.
+DEFAULT_MAX_GROUND_EVIDENCE_AGE_S = 3.0
 _GUIDED = "GUIDED"
 
 
@@ -40,6 +47,14 @@ class GuardConfig(BaseModel):
     airborne_alt_threshold_m: float = DEFAULT_AIRBORNE_ALT_THRESHOLD_M
     max_on_ground_alt_m: float = DEFAULT_MAX_ON_GROUND_ALT_M
     max_heartbeat_age_s: float = DEFAULT_MAX_HEARTBEAT_AGE_S
+    max_ground_evidence_age_s: float = DEFAULT_MAX_GROUND_EVIDENCE_AGE_S
+
+    @field_validator("max_ground_evidence_age_s")
+    @classmethod
+    def _ground_evidence_age_finite_non_negative(cls, value: float) -> float:
+        if not math.isfinite(value) or value < 0:
+            raise ValueError("max_ground_evidence_age_s must be finite and >= 0")
+        return value
 
 
 class GuardCheck(BaseModel):
@@ -72,6 +87,22 @@ class GuardDecision(BaseModel):
 
 def _passed(name: str, detail: str) -> GuardCheck:
     return GuardCheck(name=name, passed=True, detail=detail)
+
+
+def _age_text(age_s: float | None) -> str:
+    return "never" if age_s is None else f"{age_s:.1f}s"
+
+
+def _is_fresh_age(age_s: float | None, limit_s: float) -> bool:
+    """True only for a usable freshness age: finite and ``0 <= age <= limit``.
+
+    ``None`` (never received), negative, NaN and Infinity all count as
+    not-fresh — an anomalous age must never read as fresh evidence.
+    """
+
+    if age_s is None or not math.isfinite(age_s) or age_s < 0:
+        return False
+    return age_s <= limit_s
 
 
 def _reject(
@@ -229,7 +260,9 @@ def check_disarm(
         )
 
     # Evidence of being airborne wins over anything else: checked BEFORE
-    # on-ground so contradictory telemetry rejects safely.
+    # on-ground so contradictory telemetry rejects safely. Staleness never
+    # downgrades a refusal — stale air evidence still rejects, because
+    # refusing is the safe direction.
     airborne = state.landed_state == "in_air" or (
         state.relative_alt_m is not None
         and state.relative_alt_m > config.airborne_alt_threshold_m
@@ -248,15 +281,55 @@ def check_disarm(
             ),
         )
 
-    # Positive ground evidence: either an explicit landed_state or a known
-    # relative altitude at/below the conservative on-ground ceiling.
+    # Positive ground evidence, freshness-gated (Phase 2.1): stale cached
+    # "ground" is not current ground. A landed_state report counts only while
+    # its age is known and within ``max_ground_evidence_age_s``; a low known
+    # relative altitude only while telemetry itself is that fresh. Anomalous
+    # ages (negative/NaN/Infinity/None) are never fresh.
     rel_alt = state.relative_alt_m
-    on_ground = state.landed_state == "on_ground"
+    landed_reported = state.landed_state == "on_ground"
+    landed_fresh = _is_fresh_age(state.landed_state_age_s, config.max_ground_evidence_age_s)
     low_known_alt = rel_alt is not None and rel_alt <= config.max_on_ground_alt_m
-    if not (on_ground or low_known_alt):
-        # Armed (or armed-unknown) but we can neither prove air nor ground.
-        # Missing telemetry must never be read as "on the ground"; refuse
-        # rather than lean on the autopilot's NACK as the safety net.
+    telemetry_fresh = _is_fresh_age(state.telemetry_age_s, config.max_ground_evidence_age_s)
+    on_ground = landed_reported and landed_fresh
+    alt_ground = low_known_alt and telemetry_fresh
+
+    if not (on_ground or alt_ground):
+        if landed_reported or low_known_alt:
+            # Surface ground evidence exists but is stale or undated: cached
+            # data must not be read as *current* ground contact.
+            return _reject(
+                action=action,
+                reason="ground_state_stale",
+                message=(
+                    "refusing to disarm: cached ground evidence is stale "
+                    f"(landed_state={state.landed_state} "
+                    f"age={_age_text(state.landed_state_age_s)}, "
+                    f"rel_alt={rel_alt} age={_age_text(state.telemetry_age_s)}; "
+                    f"accepted up to {config.max_ground_evidence_age_s:.1f}s)"
+                ),
+                hint=(
+                    "wait for fresh telemetry, then re-check (mavctl status or "
+                    "mavctl telemetry); land first (mavctl land --confirm) if "
+                    "in doubt; --force is reserved for an intentional "
+                    "emergency motor stop"
+                ),
+                checks=checks,
+                failed_check=GuardCheck(
+                    name="ground_fresh",
+                    passed=False,
+                    detail=(
+                        f"landed_state={state.landed_state} "
+                        f"age={_age_text(state.landed_state_age_s)} "
+                        f"rel_alt={rel_alt} age={_age_text(state.telemetry_age_s)} "
+                        f"max_ground_evidence_age_s={config.max_ground_evidence_age_s}"
+                    ),
+                ),
+            )
+        # Armed (or armed-unknown) and we can neither prove air nor ground —
+        # no ground signal at all. Missing telemetry must never be read as
+        # "on the ground"; refuse rather than lean on the autopilot's NACK
+        # as the safety net.
         return _reject(
             action=action,
             reason="ground_state_unknown",
@@ -278,7 +351,14 @@ def check_disarm(
             ),
         )
 
-    checks.append(_passed("ground_known", f"landed_state={state.landed_state} rel_alt={rel_alt}"))
+    checks.append(
+        _passed(
+            "ground_known",
+            f"landed_state={state.landed_state} "
+            f"age={_age_text(state.landed_state_age_s)} rel_alt={rel_alt} "
+            f"telemetry_age={_age_text(state.telemetry_age_s)}",
+        )
+    )
     return GuardDecision(allowed=True, action=action, checks=checks)
 
 

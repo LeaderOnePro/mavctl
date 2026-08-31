@@ -30,25 +30,36 @@ with an undetermined precondition is exit 5, never 4.
 
 ## Positive ground evidence (disarm)
 
-A non-force `disarm --confirm` is allowed **only** when ground contact can be
-proven:
+A non-force `disarm --confirm` is allowed **only** when *current* ground
+contact can be proven — the evidence must exist **and** be fresh:
 
 1. Airborne evidence first: `landed_state == "in_air"`, or known relative
    altitude above the airborne threshold (default 1 m) → rejected as
-   `in_flight` (exit 5). Contradictory telemetry rejects safely here too.
-2. Ground evidence: explicit `landed_state == "on_ground"`, or a known
-   relative altitude at/below the on-ground ceiling (default 0.5 m,
-   deliberately conservative) → allowed.
-3. Everything else — including the ~1 s takeoff transition window and missing
+   `in_flight` (exit 5). Contradictory telemetry rejects safely here too —
+   and air evidence does **not** need to be fresh: a stale refusal stays a
+   refusal, because refusing is the safe direction.
+2. Ground evidence, freshness-gated: explicit `landed_state == "on_ground"`
+   counts only while `landed_state_age_s` is known and within
+   `max_ground_evidence_age_s` (default 3.0 s); a known relative altitude
+   at/below the on-ground ceiling (default 0.5 m, deliberately conservative)
+   counts only while `telemetry_age_s` is within the same window. Either
+   fresh stream alone is sufficient.
+3. Surface ground evidence that is stale or undated (its `*_age_s` is
+   missing or above the window) → rejected as `ground_state_stale`
+   (exit 5): stale cache is not *current* ground.
+4. Everything else — including the ~1 s takeoff transition window and missing
    telemetry — is rejected as `ground_state_unknown` (exit 5).
 
-Missing telemetry is never read as "on the ground", and the autopilot's own
-NACK is not relied on as a design-level defence. On ArduPilot, ArduCopter
-usually does not stream `EXTENDED_SYS_STATE`, so `landed_state` is often
-unavailable — treat `disarm` as a tool for confirmed-ground situations only.
+Only ordinary `disarm` consults freshness; the `arm` / `takeoff` / `mode` /
+`land` / `rtl` guards do not. Missing telemetry is never read as "on the
+ground", and the autopilot's own NACK is not relied on as a design-level
+defence. On ArduPilot, ArduCopter usually does not stream
+`EXTENDED_SYS_STATE`, so `landed_state` is often unavailable — treat
+`disarm` as a tool for confirmed-ground situations only.
 
 Thresholds are daemon-side configuration defaults (airborne 1 m, on-ground
-0.5 m, max takeoff altitude 120 m); they are not CLI flags.
+0.5 m, max ground-evidence age 3.0 s, max takeoff altitude 120 m); they are
+not CLI flags.
 
 ## Force-arm does not exist
 

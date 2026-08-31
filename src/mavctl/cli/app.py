@@ -7,6 +7,7 @@ from typing import Annotated, Any
 
 import typer
 
+from mavctl import __version__
 from mavctl.cli.render import emit_success, fail
 from mavctl.daemon import process
 from mavctl.daemon.client import DaemonNotRunningError, call_daemon
@@ -21,6 +22,28 @@ app = typer.Typer(
 )
 daemon_app = typer.Typer(help="Manage the mavctl daemon process.", no_args_is_help=True)
 app.add_typer(daemon_app, name="daemon")
+
+
+def _version_callback(value: bool) -> None:
+    if value:
+        # Pure client-side: no daemon, no vehicle link required.
+        typer.echo(f"mavctl {__version__}")
+        raise typer.Exit()
+
+
+@app.callback()
+def _root(
+    version: Annotated[
+        bool,
+        typer.Option(
+            "--version",
+            help="Show the mavctl version and exit.",
+            callback=_version_callback,
+            is_eager=True,
+        ),
+    ] = False,
+) -> None:
+    """Headless MAVLink ground control station CLI."""
 
 JsonOption = Annotated[bool, typer.Option("--json", help="Emit structured JSON to stdout.")]
 ConfirmOption = Annotated[
@@ -317,6 +340,14 @@ def _fmt(value: Any, suffix: str = "", nd: int = 2) -> str:
     return f"{value}{suffix}"
 
 
+def _fmt_age(seconds: Any) -> str:
+    """Render a freshness age as ``0.2s`` / ``n/a`` (never received)."""
+
+    if seconds is None:
+        return "n/a"
+    return f"{seconds:.1f}s"
+
+
 def _format_state(s: dict[str, Any]) -> str:
     battery = s.get("battery") or {}
     gps = s.get("gps") or {}
@@ -341,9 +372,12 @@ def _format_state(s: dict[str, Any]) -> str:
         f"  rel_alt={_fmt(s.get('relative_alt_m'), ' m')}",
         f"battery    : {_fmt(battery.get('voltage_v'), ' V')}"
         f"  {_fmt(battery.get('current_a'), ' A')}"
-        f"  {_fmt(battery.get('remaining_pct'), ' %', nd=0)}",
+        f"  {_fmt(battery.get('remaining_pct'), ' %', nd=0)}"
+        f"  age={_fmt_age(s.get('battery_age_s'))}",
         f"gps        : {gps.get('fix_label') or 'n/a'}"
-        f"  sats={_fmt(gps.get('satellites_visible'))}",
+        f"  sats={_fmt(gps.get('satellites_visible'))}"
+        f"  age={_fmt_age(s.get('gps_age_s'))}",
+        f"telemetry  : age={_fmt_age(s.get('telemetry_age_s'))}",
     ]
     home = s.get("home_position")
     if home:
@@ -351,6 +385,7 @@ def _format_state(s: dict[str, Any]) -> str:
             f"home       : lat={_fmt(home.get('lat_deg'), nd=7)}"
             f"  lon={_fmt(home.get('lon_deg'), nd=7)}"
             f"  alt_msl={_fmt(home.get('alt_msl_m'), ' m')}"
+            f"  age={_fmt_age(s.get('home_position_age_s'))}"
         )
     return "\n".join(lines)
 
