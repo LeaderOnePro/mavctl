@@ -7,6 +7,7 @@ import json
 import pytest
 from typer.testing import CliRunner
 
+from mavctl import __version__
 from mavctl.cli.app import app
 from mavctl.daemon import process
 from mavctl.daemon.client import DaemonNotRunningError
@@ -15,6 +16,15 @@ from mavctl.models import DaemonResponse, ExitCode
 runner = CliRunner()
 
 _CALL_DAEMON = "mavctl.cli.app.call_daemon"
+
+
+def test_version_flag_prints_version_and_exits_zero() -> None:
+    """--version is pure client-side: no daemon, no vehicle link needed."""
+
+    result = runner.invoke(app, ["--version"])
+
+    assert result.exit_code == 0
+    assert result.stdout.strip() == f"mavctl {__version__}"
 
 
 def test_status_daemon_down_exits_3(monkeypatch: pytest.MonkeyPatch) -> None:

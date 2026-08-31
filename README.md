@@ -124,6 +124,12 @@ uvx mavctl --help
 pipx install mavctl
 ```
 
+Verify the install — `mavctl --version` needs no daemon or vehicle:
+
+```bash
+mavctl --version
+```
+
 Before pointing mavctl at anything that flies, walk through the SITL-first
 quickstart above. Release history and the publishing runbook live in
 [docs/PUBLISHING.md](docs/PUBLISHING.md).

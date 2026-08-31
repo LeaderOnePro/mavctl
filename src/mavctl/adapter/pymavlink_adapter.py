@@ -164,6 +164,18 @@ class PymavlinkAdapter:
         self._attitude = Attitude()
         self._velocity = Velocity()
         self._telemetry_ts: float | None = None
+        # Freshness: time.monotonic() of the last accepted message per
+        # stream (locked-autopilot source only). Monotonic, never epoch
+        # wall-clock, so ages survive wall-clock adjustments. Ages keep
+        # counting after heartbeat loss — the cached snapshot's staleness
+        # must stay visible when the link is gone. Future guards may use
+        # stream freshness as an additional input; current guard conditions
+        # are unchanged.
+        self._battery_ts_mono: float | None = None
+        self._gps_ts_mono: float | None = None
+        self._telemetry_ts_mono: float | None = None
+        self._home_ts_mono: float | None = None
+        self._landed_state_ts_mono: float | None = None
 
     # -- lifecycle ---------------------------------------------------------
 
@@ -211,6 +223,13 @@ class PymavlinkAdapter:
 
     def get_state(self) -> VehicleState:
         with self._lock:
+            now = time.monotonic()
+
+            def _age(ts_mono: float | None) -> float | None:
+                # None = stream never received; otherwise elapsed monotonic
+                # seconds, independent of the heartbeat/connected state.
+                return round(now - ts_mono, 3) if ts_mono is not None else None
+
             age = self._heartbeat_age_locked()
             connected = age is not None and age <= self._heartbeat_timeout_s
             return VehicleState(
@@ -228,6 +247,11 @@ class PymavlinkAdapter:
                 battery=self._battery.model_copy(),
                 gps=self._gps.model_copy(),
                 home_position=self._home.model_copy() if self._home is not None else None,
+                telemetry_age_s=_age(self._telemetry_ts_mono),
+                gps_age_s=_age(self._gps_ts_mono),
+                battery_age_s=_age(self._battery_ts_mono),
+                home_position_age_s=_age(self._home_ts_mono),
+                landed_state_age_s=_age(self._landed_state_ts_mono),
             )
 
     def get_telemetry(self) -> Telemetry:
@@ -480,6 +504,7 @@ class PymavlinkAdapter:
         )
         with self._lock:
             self._battery = battery
+            self._battery_ts_mono = time.monotonic()
 
     def _on_global_position(self, msg: Any) -> None:
         if not self._is_locked_target(msg):
@@ -507,6 +532,7 @@ class PymavlinkAdapter:
             self._velocity = velocity
             self._relative_alt_m = relative_alt
             self._telemetry_ts = time.time()
+            self._telemetry_ts_mono = time.monotonic()
 
     def _on_attitude(self, msg: Any) -> None:
         if not self._is_locked_target(msg):
@@ -519,6 +545,7 @@ class PymavlinkAdapter:
         with self._lock:
             self._attitude = attitude
             self._telemetry_ts = time.time()
+            self._telemetry_ts_mono = time.monotonic()
 
     def _on_gps_raw(self, msg: Any) -> None:
         if not self._is_locked_target(msg):
@@ -532,6 +559,7 @@ class PymavlinkAdapter:
         )
         with self._lock:
             self._gps = gps
+            self._gps_ts_mono = time.monotonic()
 
     def _on_command_ack(self, msg: Any) -> None:
         # Refuse all ACKs until the autopilot target is locked. Default
@@ -558,6 +586,7 @@ class PymavlinkAdapter:
         label = _LANDED_STATE_LABELS.get(msg.landed_state)
         with self._lock:
             self._landed_state = label
+            self._landed_state_ts_mono = time.monotonic()
 
     def _on_home_position(self, msg: Any) -> None:
         if not self._is_locked_target(msg):
@@ -569,6 +598,7 @@ class PymavlinkAdapter:
         )
         with self._lock:
             self._home = home
+            self._home_ts_mono = time.monotonic()
 
 
 # Dispatch table mapping MAVLink message type -> bound-method.

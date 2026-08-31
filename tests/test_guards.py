@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pytest
+from pydantic import ValidationError
 
 from mavctl.daemon import guards
 from mavctl.daemon.guards import GuardConfig
@@ -20,6 +21,10 @@ def _state(**kw: object) -> VehicleState:
         "armed": False,
         "gps": GpsInfo(fix_type=6, fix_label="rtk_fixed"),
         "battery": Battery(voltage_v=12.6),
+        # Freshness defaults mirror a live snapshot: ground evidence is fresh
+        # unless a test explicitly overrides it stale / None.
+        "telemetry_age_s": 0.2,
+        "landed_state_age_s": 0.2,
     }
     base.update(kw)
     return VehicleState(**base)  # type: ignore[arg-type]
@@ -280,6 +285,305 @@ def test_disarm_on_ground_ceiling_is_configurable() -> None:
         _state(armed=True, relative_alt_m=0.7), confirm=True, force=False, config=cfg
     )
     assert raised.allowed is True
+
+
+# -- disarm ground-evidence freshness (Phase 2.1 P0) ------------------------
+#
+# Principle extension: "missing telemetry is not ground" now also means
+# "stale telemetry / landed-state is not *current* ground".
+
+
+def test_disarm_fresh_low_altitude_allows() -> None:
+    d = guards.check_disarm(
+        _state(armed=True, landed_state=None, relative_alt_m=0.3, telemetry_age_s=0.2),
+        confirm=True,
+        force=False,
+        config=_CFG,
+    )
+    assert d.allowed is True
+
+
+def test_disarm_stale_low_altitude_rejected_ground_state_stale() -> None:
+    d = guards.check_disarm(
+        _state(armed=True, landed_state=None, relative_alt_m=0.3, telemetry_age_s=9.9),
+        confirm=True,
+        force=False,
+        config=_CFG,
+    )
+    assert d.allowed is False
+    assert d.reason == "ground_state_stale"
+    assert d.exit_code == ExitCode.SAFETY_REJECTED
+    assert "stale" in (d.message or "")
+    assert "--force" in (d.hint or "")
+
+
+def test_disarm_fresh_on_ground_allows() -> None:
+    d = guards.check_disarm(
+        _state(armed=True, landed_state="on_ground", relative_alt_m=None, landed_state_age_s=0.2),
+        confirm=True,
+        force=False,
+        config=_CFG,
+    )
+    assert d.allowed is True
+
+
+def test_disarm_stale_on_ground_rejected_ground_state_stale() -> None:
+    d = guards.check_disarm(
+        _state(armed=True, landed_state="on_ground", relative_alt_m=None, landed_state_age_s=9.9),
+        confirm=True,
+        force=False,
+        config=_CFG,
+    )
+    assert d.allowed is False
+    assert d.reason == "ground_state_stale"
+    assert d.exit_code == ExitCode.SAFETY_REJECTED
+
+
+def test_disarm_stale_on_ground_with_high_altitude_still_in_flight() -> None:
+    # Air evidence wins even when the ground report itself is stale.
+    d = guards.check_disarm(
+        _state(
+            armed=True,
+            landed_state="on_ground",
+            relative_alt_m=15.0,
+            landed_state_age_s=9.9,
+            telemetry_age_s=9.9,
+        ),
+        confirm=True,
+        force=False,
+        config=_CFG,
+    )
+    assert d.allowed is False
+    assert d.reason == "in_flight"
+
+
+def test_disarm_stale_air_evidence_still_rejects_in_flight() -> None:
+    # Staleness never downgrades a refusal: stale air evidence keeps the
+    # conservative in_flight rejection.
+    in_air = guards.check_disarm(
+        _state(
+            armed=True,
+            landed_state="in_air",
+            relative_alt_m=None,
+            landed_state_age_s=99.0,
+        ),
+        confirm=True,
+        force=False,
+        config=_CFG,
+    )
+    high_alt = guards.check_disarm(
+        _state(armed=True, landed_state=None, relative_alt_m=15.0, telemetry_age_s=99.0),
+        confirm=True,
+        force=False,
+        config=_CFG,
+    )
+    assert in_air.allowed is False and in_air.reason == "in_flight"
+    assert high_alt.allowed is False and high_alt.reason == "in_flight"
+
+
+def test_disarm_no_ground_evidence_still_ground_state_unknown() -> None:
+    d = guards.check_disarm(
+        _state(
+            armed=True,
+            landed_state=None,
+            relative_alt_m=None,
+            telemetry_age_s=None,
+            landed_state_age_s=None,
+        ),
+        confirm=True,
+        force=False,
+        config=_CFG,
+    )
+    assert d.allowed is False
+    assert d.reason == "ground_state_unknown"
+    assert d.exit_code == ExitCode.SAFETY_REJECTED
+
+
+def test_disarm_missing_age_with_surface_evidence_rejected_stale() -> None:
+    # Surface ground evidence exists but its freshness age never arrived
+    # (None): undated cache cannot prove current ground contact.
+    landed = guards.check_disarm(
+        _state(armed=True, landed_state="on_ground", relative_alt_m=None, landed_state_age_s=None),
+        confirm=True,
+        force=False,
+        config=_CFG,
+    )
+    alt = guards.check_disarm(
+        _state(armed=True, landed_state=None, relative_alt_m=0.3, telemetry_age_s=None),
+        confirm=True,
+        force=False,
+        config=_CFG,
+    )
+    assert landed.reason == "ground_state_stale"
+    assert alt.reason == "ground_state_stale"
+
+
+def test_disarm_one_fresh_ground_evidence_suffices() -> None:
+    # Either stream being fresh is enough: a stale landed report does not
+    # poison a fresh low altitude, and vice versa.
+    fresh_alt = guards.check_disarm(
+        _state(
+            armed=True,
+            landed_state="on_ground",
+            relative_alt_m=0.3,
+            landed_state_age_s=99.0,
+            telemetry_age_s=0.2,
+        ),
+        confirm=True,
+        force=False,
+        config=_CFG,
+    )
+    fresh_landed = guards.check_disarm(
+        _state(
+            armed=True,
+            landed_state="on_ground",
+            relative_alt_m=0.3,
+            landed_state_age_s=0.2,
+            telemetry_age_s=99.0,
+        ),
+        confirm=True,
+        force=False,
+        config=_CFG,
+    )
+    assert fresh_alt.allowed is True
+    assert fresh_landed.allowed is True
+
+
+def test_disarm_force_allows_with_stale_and_unknown_evidence() -> None:
+    # --force remains the emergency override: no freshness requirement.
+    stale = guards.check_disarm(
+        _state(armed=True, landed_state="on_ground", relative_alt_m=None, landed_state_age_s=99.0),
+        confirm=True,
+        force=True,
+        config=_CFG,
+    )
+    unknown = guards.check_disarm(
+        _state(
+            armed=True,
+            landed_state=None,
+            relative_alt_m=None,
+            telemetry_age_s=None,
+            landed_state_age_s=None,
+        ),
+        confirm=True,
+        force=True,
+        config=_CFG,
+    )
+    assert stale.allowed is True
+    assert unknown.allowed is True
+
+
+def test_disarm_ground_evidence_age_is_configurable() -> None:
+    tight = GuardConfig(max_ground_evidence_age_s=1.0)
+    rejected = guards.check_disarm(
+        _state(armed=True, relative_alt_m=0.3, telemetry_age_s=2.0),
+        confirm=True,
+        force=False,
+        config=tight,
+    )
+    loose = GuardConfig(max_ground_evidence_age_s=5.0)
+    allowed = guards.check_disarm(
+        _state(armed=True, relative_alt_m=0.3, telemetry_age_s=2.0),
+        confirm=True,
+        force=False,
+        config=loose,
+    )
+    assert rejected.allowed is False
+    assert rejected.reason == "ground_state_stale"
+    assert allowed.allowed is True
+
+
+def test_disarm_age_exactly_at_threshold_allows() -> None:
+    d = guards.check_disarm(
+        _state(armed=True, relative_alt_m=0.3, telemetry_age_s=_CFG.max_ground_evidence_age_s),
+        confirm=True,
+        force=False,
+        config=_CFG,
+    )
+    assert d.allowed is True
+
+
+def test_disarm_age_just_above_threshold_rejected_stale() -> None:
+    d = guards.check_disarm(
+        _state(
+            armed=True,
+            relative_alt_m=0.3,
+            telemetry_age_s=_CFG.max_ground_evidence_age_s + 0.01,
+        ),
+        confirm=True,
+        force=False,
+        config=_CFG,
+    )
+    assert d.allowed is False
+    assert d.reason == "ground_state_stale"
+
+
+# -- max_ground_evidence_age_s validation + anomalous ages (P1) --------------
+
+
+def test_guard_config_rejects_negative_ground_evidence_age() -> None:
+    with pytest.raises(ValidationError):
+        GuardConfig(max_ground_evidence_age_s=-1.0)
+
+
+def test_guard_config_rejects_nan_ground_evidence_age() -> None:
+    with pytest.raises(ValidationError):
+        GuardConfig(max_ground_evidence_age_s=float("nan"))
+
+
+def test_guard_config_rejects_infinite_ground_evidence_age() -> None:
+    with pytest.raises(ValidationError):
+        GuardConfig(max_ground_evidence_age_s=float("inf"))
+
+
+@pytest.mark.parametrize("bad_age", [-1.0, float("nan"), float("inf")])
+def test_disarm_anomalous_telemetry_age_rejected_stale(bad_age: float) -> None:
+    # Low altitude with an anomalous telemetry age: -1/nan/inf are never
+    # fresh, so the ordinary disarm must not be allowed.
+    d = guards.check_disarm(
+        _state(armed=True, landed_state=None, relative_alt_m=0.3, telemetry_age_s=bad_age),
+        confirm=True,
+        force=False,
+        config=_CFG,
+    )
+    assert d.allowed is False
+    assert d.reason == "ground_state_stale"
+
+
+@pytest.mark.parametrize("bad_age", [-1.0, float("nan"), float("inf")])
+def test_disarm_anomalous_landed_age_rejected_stale(bad_age: float) -> None:
+    # on_ground report with an anomalous landed_state age: never fresh.
+    d = guards.check_disarm(
+        _state(
+            armed=True,
+            landed_state="on_ground",
+            relative_alt_m=None,
+            landed_state_age_s=bad_age,
+        ),
+        confirm=True,
+        force=False,
+        config=_CFG,
+    )
+    assert d.allowed is False
+    assert d.reason == "ground_state_stale"
+
+
+def test_disarm_boundary_ages_still_pass_with_fresh_helper() -> None:
+    # The anomaly hardening must not move the normal threshold edges.
+    at_limit = guards.check_disarm(
+        _state(armed=True, relative_alt_m=0.3, telemetry_age_s=_CFG.max_ground_evidence_age_s),
+        confirm=True,
+        force=False,
+        config=_CFG,
+    )
+    assert at_limit.allowed is True
+    zero_age = guards.check_disarm(
+        _state(armed=True, relative_alt_m=0.3, telemetry_age_s=0.0),
+        confirm=True,
+        force=False,
+        config=_CFG,
+    )
+    assert zero_age.allowed is True
 
 
 # -- mode ------------------------------------------------------------------

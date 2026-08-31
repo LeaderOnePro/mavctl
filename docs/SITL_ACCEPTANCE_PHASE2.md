@@ -141,22 +141,31 @@ uv run mavctl land --confirm --wait --timeout 90 ; echo "exit=$?"
 | 非有限起飞高度 | `takeoff --alt nan --confirm`（NaN/±Infinity 同理） | 2 | invalid_altitude |
 | 空中 disarm | 起飞后 `mavctl disarm --confirm`（已明确离地） | 5 | in_flight |
 | 地面状态未知 disarm | 已 armed 但无地面证据时 `disarm --confirm`（如刚起飞的过渡区间、遥测暂缺） | 5 | ground_state_unknown |
+| 地面证据过期 disarm | 已 armed、缓存的地面证据（on_ground 报告或低 `relative_alt`）存在但对应 age 缺失或超过 `max_ground_evidence_age_s`（默认 3.0 s）时 `disarm --confirm` | 5 | ground_state_stale |
 | 模式表未就绪 | daemon 刚连上、模式表未填充时 `mode LOITER --confirm` | 5 | mode_map_unavailable |
 
 > **空中 / 地面状态不明的 disarm 说明**：非 force 的 `disarm --confirm` 只有在
-> **能证明在地面**时才放行——显式 `landed_state=on_ground`，或 `relative_alt`
-> 已知且 ≤ `max_on_ground_alt_m`（默认 0.5 m，保守值，可配置）。判定顺序：
+> **能证明在地面，且地面证据足够新鲜**时才放行——显式
+> `landed_state=on_ground`（要求 `landed_state_age_s` 已知且 ≤
+> `max_ground_evidence_age_s`），或 `relative_alt` 已知且 ≤
+> `max_on_ground_alt_m`（默认 0.5 m，保守值）且 `telemetry_age_s` ≤
+> `max_ground_evidence_age_s`（默认 3.0 s）。判定顺序：
 >
 > 1. 确实离地（`landed_state=in_air` 或 `rel_alt` > `airborne_alt_threshold_m`
->    默认 1 m）→ `in_flight`，退出码 **5**；
-> 2. 有地面证据 → 放行；
-> 3. 其余（含 takeoff 后约 1 秒的过渡区间、ArduCopter 不发
+>    默认 1 m）→ `in_flight`，退出码 **5**。**离地证据不要求新鲜**——过期
+>    离地证据同样拒绝，拒绝本身就是安全方向；
+> 2. 有**新鲜**地面证据（两类证据任一新鲜即可）→ 放行；
+> 3. 存在表面地面证据（on_ground 报告或低相对高度）但其 freshness age 缺失
+>    或超过阈值 → **`ground_state_stale`，退出码 5**。缓存的旧数据不能等同
+>    于"当前在地面"；
+> 4. 其余（含 takeoff 后约 1 秒的过渡区间、ArduCopter 不发
 >    `EXTENDED_SYS_STATE` 且遥测暂缺的情况）→ **`ground_state_unknown`，
 >    退出码 5**。遥测缺失不再被当作"在地面"，飞控 NACK 不再作为设计上的防线。
 >
-> `--force`（仅 `disarm` 提供）可越过以上全部判定（checks 中标记
-> `forced`），语义为 **emergency motor stop; using in flight may cause a
-> crash** —— 仅限紧急情况下的故意停桨。
+> 只有 ordinary disarm 使用 freshness 门控；arm / takeoff / mode / land / rtl
+> 的 guard 判定不使用 age。`--force`（仅 `disarm` 提供）可越过以上全部判定
+> （checks 中标记 `forced`），语义为 **emergency motor stop; using in flight
+> may cause a crash** —— 仅限紧急情况下的故意停桨。
 >
 > **arm 没有 --force**：`mavctl arm` 不提供该参数，adapter 层的 arm 固定发送
 > param1=1.0 / param2=0.0，不存在绕过 pre-arm checks 的路径；即使恶意客户端
@@ -291,6 +300,48 @@ Agent 侧仍建议：危险命令后用 `mavctl status` 轮询确认 `armed` / `
 - 锁定后：仅该 system+component 的 HEARTBEAT / SYS_STATUS / GPS / 位置 / 姿态 /
   EXTENDED_SYS_STATE / HOME_POSITION / COMMAND_ACK 可更新快照或满足命令。
 
+## 8e. freshness metadata（缓存陈旧度）
+
+`status` 的 `*_age_s` 字段表示 **daemon 最后一次接受对应类别 MAVLink 消息
+距当前的秒数**：基于 `time.monotonic()` 计算（不是 epoch wall-clock）；
+`None` / `age=n/a` 表示从未收到该类消息。它是缓存陈旧度指标，不是物理测量。
+来源映射：`battery_age_s`←SYS_STATUS、`gps_age_s`←GPS_RAW_INT、
+`telemetry_age_s`←GLOBAL_POSITION_INT 或 ATTITUDE、
+`home_position_age_s`←HOME_POSITION、`landed_state_age_s`←EXTENDED_SYS_STATE。
+
+手动验收（SITL 运行中）：
+
+```bash
+uv run mavctl daemon start --connect udp:127.0.0.1:14550
+uv run mavctl status
+# 期望：battery / gps 行带 age=<秒>s；新增 telemetry : age=<秒>s 行；
+#       home 行带 age（若 home 已知）；未收到的流显示 age=n/a
+uv run mavctl status --json
+# 期望 JSON 含 telemetry_age_s / gps_age_s / battery_age_s /
+#   home_position_age_s / landed_state_age_s，非负数或 null
+#   （ArduCopter SITL 常不发 EXTENDED_SYS_STATE，landed_state_age_s
+#   为 null 是正常现象——这正是 guard 不依赖 landed_state 的原因）
+```
+
+断链后的陈旧度（停止 SITL 或断开链路，等 >3 秒无心跳）：
+
+```bash
+uv run mavctl status
+# 期望：connection : DISCONNECTED，mode/armed/status 降为 n/a，
+#       但各 age 字段继续增长（缓存陈旧度仍可见，不因失链归零/隐藏）
+```
+
+注意：
+
+- `connected` 仍以 heartbeat 为唯一依据；freshness age 目前只参与
+  ordinary disarm 的正向地面证据判定（`max_ground_evidence_age_s`，默认
+  3.0 s；过期 → `ground_state_stale` / exit 5，见 §7），其余命令的
+  guard 判定不使用 age；future guards may use stream freshness。
+
+```bash
+uv run mavctl daemon stop
+```
+
 ## 9. 退出码总表
 
 | 退出码 | 含义 |
@@ -300,7 +351,7 @@ Agent 侧仍建议：危险命令后用 `mavctl status` 轮询确认 `armed` / `
 | 2 | 参数错误（非法/非有限高度、非法 --timeout、未知模式、缺少必填项、不支持的 force arm） |
 | 3 | daemon 未运行 |
 | 4 | 飞控未连接（含 --wait 中途失链）。**只表示没有存活的载具状态**：心跳缺失/过期/失链 |
-| 5 | 安全护栏拒绝。链路存活但前置状态不可判定/未就绪也归此码（`ground_state_unknown`、`mode_map_unavailable`），不占用 4 |
+| 5 | 安全护栏拒绝。链路存活但前置状态不可判定/未就绪/过期也归此码（`ground_state_unknown`、`ground_state_stale`、`mode_map_unavailable`），不占用 4 |
 | 6 | 飞控 NACK / ACK 超时 / --wait 超时（链路仍在） |
 
 ## 10. 收尾

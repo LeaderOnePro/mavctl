@@ -540,6 +540,296 @@ def test_foreign_snapshot_telemetry_does_not_overwrite_locked() -> None:
     assert tel.attitude.roll_deg is None  # foreign attitude dropped; never set
 
 
+# -- freshness metadata + HOME_POSITION / EXTENDED_SYS_STATE filtering ------
+
+
+class _FakeMonotonicClock:
+    """Deterministic ``time.monotonic()`` replacement (no sleeps, no flakes)."""
+
+    def __init__(self, start: float = 1000.0) -> None:
+        self.now = start
+
+    def advance(self, seconds: float) -> None:
+        self.now += seconds
+
+    def __call__(self) -> float:
+        return self.now
+
+
+def _freeze_clock(monkeypatch: pytest.MonkeyPatch, clock: _FakeMonotonicClock) -> None:
+    monkeypatch.setattr("mavctl.adapter.pymavlink_adapter.time.monotonic", clock)
+
+
+def _home_msg(system: int = 1, component: int = 1) -> FakeMsg:
+    return FakeMsg(
+        "HOME_POSITION",
+        src_system=system,
+        src_component=component,
+        latitude=-353632621,
+        longitude=1491652374,
+        altitude=584080,
+    )
+
+
+def _ext_state_msg(landed: int, system: int = 1, component: int = 1) -> FakeMsg:
+    return FakeMsg(
+        "EXTENDED_SYS_STATE",
+        src_system=system,
+        src_component=component,
+        landed_state=landed,
+    )
+
+
+def test_home_position_from_locked_autopilot_updates_state_and_age(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock = _FakeMonotonicClock()
+    _freeze_clock(monkeypatch, clock)
+    adapter = PymavlinkAdapter("udp:127.0.0.1:14550")
+    adapter._master = FakeMaster(flightmode="GUIDED")
+    adapter._on_heartbeat(_hb(1, 1, armed=False, custom_mode=0, system_status=3))
+
+    adapter._on_home_position(_home_msg())
+    clock.advance(0.05)
+
+    state = adapter.get_state()
+    assert state.home_position is not None
+    assert state.home_position.lat_deg == pytest.approx(-35.3632621)
+    assert state.home_position.alt_msl_m == pytest.approx(584.08)
+    assert state.home_position_age_s == pytest.approx(0.05)
+
+
+def test_foreign_home_position_never_overwrites_locked_home(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock = _FakeMonotonicClock()
+    _freeze_clock(monkeypatch, clock)
+    adapter = PymavlinkAdapter("udp:127.0.0.1:14550")
+    adapter._master = FakeMaster(flightmode="GUIDED")
+    adapter._on_heartbeat(_hb(1, 1, armed=False, custom_mode=0, system_status=3))
+    adapter._on_home_position(_home_msg())
+
+    clock.advance(1.0)
+    # A foreign vehicle and a gimbal component both try to set home.
+    adapter._on_home_position(_home_msg(system=2, component=1))
+    adapter._on_home_position(_home_msg(system=1, component=154))
+
+    state = adapter.get_state()
+    assert state.home_position is not None
+    assert state.home_position.lat_deg == pytest.approx(-35.3632621)  # original
+    # Age still counts from the accepted message — not refreshed by foreign.
+    assert state.home_position_age_s == pytest.approx(1.0)
+
+
+def test_extended_sys_state_from_locked_autopilot_updates_landed_and_age(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock = _FakeMonotonicClock()
+    _freeze_clock(monkeypatch, clock)
+    adapter = PymavlinkAdapter("udp:127.0.0.1:14550")
+    adapter._master = FakeMaster(flightmode="GUIDED")
+    adapter._on_heartbeat(_hb(1, 1, armed=False, custom_mode=0, system_status=3))
+
+    adapter._on_extended_sys_state(_ext_state_msg(1))
+    clock.advance(0.05)
+
+    state = adapter.get_state()
+    assert state.landed_state == "on_ground"
+    assert state.landed_state_age_s == pytest.approx(0.05)
+
+
+def test_foreign_extended_sys_state_never_overwrites_locked_landed_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock = _FakeMonotonicClock()
+    _freeze_clock(monkeypatch, clock)
+    adapter = PymavlinkAdapter("udp:127.0.0.1:14550")
+    adapter._master = FakeMaster(flightmode="GUIDED")
+    adapter._on_heartbeat(_hb(1, 1, armed=False, custom_mode=0, system_status=3))
+    adapter._on_extended_sys_state(_ext_state_msg(1))
+
+    clock.advance(1.0)
+    adapter._on_extended_sys_state(_ext_state_msg(2, system=2, component=1))
+    adapter._on_extended_sys_state(_ext_state_msg(2, system=1, component=154))
+
+    state = adapter.get_state()
+    assert state.landed_state == "on_ground"  # original
+    assert state.landed_state_age_s == pytest.approx(1.0)  # not refreshed
+
+
+def test_home_and_landed_state_ignored_before_target_lock() -> None:
+    adapter = PymavlinkAdapter("udp:127.0.0.1:14550")
+    adapter._on_home_position(_home_msg())
+    adapter._on_extended_sys_state(_ext_state_msg(1))
+
+    state = adapter.get_state()
+    assert state.home_position is None
+    assert state.landed_state is None
+    assert state.home_position_age_s is None
+    assert state.landed_state_age_s is None
+
+
+def test_freshness_ages_none_then_recent_then_grow_while_disconnected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Ages: None → near-zero on receipt → keep growing after heartbeat loss."""
+
+    clock = _FakeMonotonicClock()
+    _freeze_clock(monkeypatch, clock)
+    adapter = PymavlinkAdapter("udp:127.0.0.1:14550")
+    adapter._master = FakeMaster(flightmode="GUIDED")
+
+    # Nothing received yet: every age is None.
+    state = adapter.get_state()
+    assert state.telemetry_age_s is None
+    assert state.gps_age_s is None
+    assert state.battery_age_s is None
+    assert state.home_position_age_s is None
+    assert state.landed_state_age_s is None
+
+    adapter._on_heartbeat(_hb(1, 1, armed=False, custom_mode=0, system_status=3))
+    adapter._on_sys_status(
+        FakeMsg(
+            "SYS_STATUS",
+            src_system=1,
+            src_component=1,
+            voltage_battery=12600,
+            current_battery=1000,
+            battery_remaining=80,
+        )
+    )
+    adapter._on_gps_raw(
+        FakeMsg("GPS_RAW_INT", src_system=1, src_component=1, fix_type=6, satellites_visible=12)
+    )
+    adapter._on_global_position(
+        FakeMsg(
+            "GLOBAL_POSITION_INT",
+            src_system=1,
+            src_component=1,
+            lat=1,
+            lon=1,
+            alt=1000,
+            relative_alt=500,
+            vx=0,
+            vy=0,
+            vz=0,
+            hdg=0,
+        )
+    )
+    adapter._on_home_position(_home_msg())
+    adapter._on_extended_sys_state(_ext_state_msg(1))
+
+    # Just received: non-None and near zero, without any sleeping.
+    clock.advance(0.05)
+    state = adapter.get_state()
+    for field in (
+        "telemetry_age_s",
+        "gps_age_s",
+        "battery_age_s",
+        "home_position_age_s",
+        "landed_state_age_s",
+    ):
+        assert getattr(state, field) == pytest.approx(0.05), field
+
+    # Old cached data: ages keep growing even though the heartbeat went
+    # stale and volatile flight state is suppressed to None.
+    clock.advance(10.0)
+    state = adapter.get_state()
+    assert state.connected is False  # heartbeat age 10.05s > 3.0s timeout
+    assert state.flight_mode is None
+    assert state.armed is None
+    assert state.battery_age_s == pytest.approx(10.05)
+    assert state.gps_age_s == pytest.approx(10.05)
+    assert state.telemetry_age_s == pytest.approx(10.05)
+    assert state.home_position_age_s == pytest.approx(10.05)
+    assert state.landed_state_age_s == pytest.approx(10.05)
+
+
+def test_rejected_sources_never_set_freshness_timestamps(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Messages that fail target locking must not create age metadata."""
+
+    clock = _FakeMonotonicClock()
+    _freeze_clock(monkeypatch, clock)
+    adapter = PymavlinkAdapter("udp:127.0.0.1:14550")
+    adapter._master = FakeMaster(flightmode="GUIDED")
+
+    # Before lock: every stream message is refused, ages stay None.
+    adapter._on_sys_status(
+        FakeMsg("SYS_STATUS", voltage_battery=12600, current_battery=0, battery_remaining=50)
+    )
+    adapter._on_gps_raw(FakeMsg("GPS_RAW_INT", fix_type=6, satellites_visible=10))
+    adapter._on_global_position(
+        FakeMsg(
+            "GLOBAL_POSITION_INT",
+            lat=1,
+            lon=1,
+            alt=1000,
+            relative_alt=0,
+            vx=0,
+            vy=0,
+            vz=0,
+            hdg=0,
+        )
+    )
+    adapter._on_attitude(FakeMsg("ATTITUDE", roll=0.0, pitch=0.0, yaw=0.0))
+    adapter._on_home_position(_home_msg())
+    adapter._on_extended_sys_state(_ext_state_msg(1))
+    state = adapter.get_state()
+    assert state.battery.voltage_v is None
+    assert state.battery_age_s is None
+    assert state.gps_age_s is None
+    assert state.telemetry_age_s is None
+    assert state.home_position is None
+    assert state.home_position_age_s is None
+    assert state.landed_state_age_s is None
+
+    # After lock: foreign system / non-autopilot component stays refused.
+    adapter._on_heartbeat(_hb(1, 1, armed=False, custom_mode=0, system_status=3))
+    clock.advance(2.0)
+    adapter._on_sys_status(
+        FakeMsg(
+            "SYS_STATUS",
+            src_system=2,
+            src_component=1,
+            voltage_battery=12600,
+            current_battery=0,
+            battery_remaining=50,
+        )
+    )
+    adapter._on_gps_raw(
+        FakeMsg("GPS_RAW_INT", src_system=1, src_component=154, fix_type=3, satellites_visible=5)
+    )
+    adapter._on_global_position(
+        FakeMsg(
+            "GLOBAL_POSITION_INT",
+            src_system=2,
+            src_component=1,
+            lat=1,
+            lon=1,
+            alt=1000,
+            relative_alt=0,
+            vx=0,
+            vy=0,
+            vz=0,
+            hdg=0,
+        )
+    )
+    adapter._on_attitude(
+        FakeMsg("ATTITUDE", src_system=1, src_component=154, roll=0.0, pitch=0.0, yaw=0.0)
+    )
+    adapter._on_home_position(_home_msg(system=2, component=1))
+    adapter._on_extended_sys_state(_ext_state_msg(2, system=1, component=154))
+
+    state = adapter.get_state()
+    assert state.battery_age_s is None
+    assert state.gps_age_s is None
+    assert state.telemetry_age_s is None
+    assert state.home_position_age_s is None
+    assert state.landed_state_age_s is None
+
+
 # -- command transaction serialization (P0) --------------------------------
 
 
