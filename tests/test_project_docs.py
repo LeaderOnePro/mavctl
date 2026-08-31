@@ -265,12 +265,34 @@ def test_pyproject_packaging_metadata_is_release_ready_shape() -> None:
     assert metadata_line(r'^name = "mavctl"$')
     assert metadata_line(r'^readme = "README\.md"$')
     assert metadata_line(r'^license = "MIT"$')
-    # The formal v0.2.0 release version — plain PEP 440, no dev suffix.
-    assert metadata_line(r'^version = "0\.2\.0"$')
+    # The release under preparation — plain PEP 440, no dev suffix. The
+    # published production release remains 0.2.0 (see the claim test above).
+    assert metadata_line(r'^version = "0\.2\.1"$')
     assert metadata_line(r'^mavctl = "[^"]+"$')
     license_text = (_ROOT / "LICENSE").read_text(encoding="utf-8")
     assert "MIT License" in license_text
     assert "LeaderOnePro" in license_text
+
+
+# -- 0.2.1 release preparation ----------------------------------------------
+
+
+def test_readmes_highlight_the_021_notable_changes() -> None:
+    # The release-prep READMEs must surface the 0.2.1 notable changes:
+    # the version flag, the freshness fields, and the stale-ground guard.
+    for readme in (_README, _ZH_README):
+        assert "mavctl --version" in readme
+        assert "telemetry_age_s" in readme
+        assert "ground_state_stale" in readme
+
+
+def test_publishing_doc_states_021_not_yet_published() -> None:
+    assert "## Release state before v0.2.1" in _PUBLISHING
+    normalized = " ".join(_PUBLISHING.split())
+    assert (
+        "Production PyPI publication has not happened until this branch is "
+        "merged to main and the v0.2.1 tag is pushed." in normalized
+    )
 
 
 # -- publishing docs ---------------------------------------------------------

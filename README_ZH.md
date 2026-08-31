@@ -65,6 +65,15 @@ mavctl rtl
 多载具协同
 ```
 
+0.2.1 主要变化：
+
+- `mavctl --version` 直接输出版本号——不需要 daemon 或载具。
+- `status --json` 携带每条流的 freshness age：`telemetry_age_s`、
+  `gps_age_s`、`battery_age_s`、`home_position_age_s`、`landed_state_age_s`
+  （基于单调时钟；心跳失链后 age 继续增长，缓存陈旧度始终可见）。
+- 普通（非 force）`disarm` 要求新鲜的正向地面证据；表面地面证据过期会被
+  以 `ground_state_stale` 拒绝（退出码 5）。
+
 ## ArduPilot SITL 快速上手
 
 需要 Python >= 3.10 与 [uv](https://docs.astral.sh/uv/)。永远先启动 SITL；

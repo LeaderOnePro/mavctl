@@ -69,6 +69,17 @@ Firmware flashing
 Multi-vehicle orchestration
 ```
 
+Notable in 0.2.1:
+
+- `mavctl --version` prints the installed version — no daemon or vehicle
+  needed.
+- `status --json` carries per-stream freshness ages: `telemetry_age_s`,
+  `gps_age_s`, `battery_age_s`, `home_position_age_s`, `landed_state_age_s`
+  (monotonic-clock based; they keep counting after heartbeat loss so cache
+  staleness stays visible).
+- Ordinary non-force `disarm` requires fresh positive ground evidence; stale
+  apparent ground evidence is rejected as `ground_state_stale` (exit 5).
+
 ## Quickstart with ArduPilot SITL
 
 Requires Python >= 3.10 and [uv](https://docs.astral.sh/uv/). Always bring up
