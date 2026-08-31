@@ -141,21 +141,21 @@ uv run mavctl --help
 
 ## Agent Skill
 
-The repository ships a portable agent Skill under `skills/mavctl-flight/`
+mavctl bundles a portable Agent Skill under `skills/mavctl-flight/`
 (entrypoint plus workflows / safety / troubleshooting references). It is a
-source asset of this repo, not an installed package.
+source asset of this repo: installing the Skill is independent of installing
+the mavctl CLI from PyPI, e.g. `uv tool install mavctl`.
 
-To use it with an agent runtime, install or symlink this directory according
-to that runtime's current Skill discovery convention.
-
-Example for Claude Code, project-local to this repository:
+Install the bundled Agent Skill globally:
 
 ```bash
-mkdir -p .claude/skills
-ln -s ../../skills/mavctl-flight .claude/skills/mavctl-flight
+npx skills add LeaderOnePro/mavctl -y -g
 ```
 
-That is one concrete example, not a universal convention — runtimes differ.
+The community skills CLI manages installation for the agent runtimes it
+supports, according to its current environment and configuration. See
+[docs/SKILLS_CLI_ACCEPTANCE.md](docs/SKILLS_CLI_ACCEPTANCE.md) for tested
+behaviour and compatibility notes.
 
 ## Safety model
 

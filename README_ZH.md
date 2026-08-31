@@ -133,21 +133,19 @@ uv run mavctl --help
 
 ## Agent Skill
 
-仓库自带一个可移植的 agent Skill，位于 `skills/mavctl-flight/`（入口文件加
-workflows / safety / troubleshooting 参考文档）。它是本仓库的源资产，不属于
-安装包的一部分。
+mavctl 自带一个可移植的 Agent Skill，位于 `skills/mavctl-flight/`（入口文件加
+workflows / safety / troubleshooting 参考文档）。它是本仓库的源资产：安装
+Skill 与通过 PyPI 安装 mavctl CLI（例如 `uv tool install mavctl`）相互独立。
 
-要在某个 agent 运行时中使用它，请按照该运行时当前的 Skill 发现约定安装或
-软链此目录。
-
-以 Claude Code 为例（项目本地、作用于本仓库）：
+以用户级（global）方式安装自带的 Agent Skill：
 
 ```bash
-mkdir -p .claude/skills
-ln -s ../../skills/mavctl-flight .claude/skills/mavctl-flight
+npx skills add LeaderOnePro/mavctl -y -g
 ```
 
-这只是一个具体示例，不是通用约定——各运行时并不相同。
+社区 skills CLI 会根据其当前环境与配置，处理它所支持的 Agent runtime 的安装。
+已验证的行为与兼容性说明见
+[docs/SKILLS_CLI_ACCEPTANCE.md](docs/SKILLS_CLI_ACCEPTANCE.md)。
 
 ## 安全模型
 
