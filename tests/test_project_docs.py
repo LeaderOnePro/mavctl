@@ -194,25 +194,64 @@ def test_chinese_readme_states_pypi_install_availability() -> None:
 
 # -- skills CLI install commands ---------------------------------------------
 
+_SKILLS_INSTALL_COMMAND = "npx skills add LeaderOnePro/mavctl -y -g"
+_SKILLS_FORBIDDEN_IN_READMES = (
+    "skills@",
+    "-s mavctl-flight",
+    "-a claude-code",
+    "--all",
+    "--copy",
+    "/path/to/mavctl",
+    "mkdir -p .claude",
+    "ln -s",
+)
 
-def test_readmes_document_only_the_tested_skills_cli_install() -> None:
-    # The exact command verified in docs/SKILLS_CLI_ACCEPTANCE.md must appear
-    # in both READMEs; untested npx skills invocations must not be promised.
-    verified = "npx skills add LeaderOnePro/mavctl -s mavctl-flight -a claude-code -y"
+
+def test_readmes_document_the_single_global_skill_install() -> None:
+    # Product decision: the READMEs expose exactly one generic install
+    # command. Target-specific, project-local and bulk-copy variants live in
+    # docs/SKILLS_CLI_ACCEPTANCE.md only.
     for readme in (_README, _ZH_README):
-        assert verified in readme
+        assert _SKILLS_INSTALL_COMMAND in readme
+        for forbidden in _SKILLS_FORBIDDEN_IN_READMES:
+            assert forbidden not in readme, forbidden
         for line in readme.splitlines():
-            for other in re.findall(r"npx skills add \S.*", line):
-                assert other.strip() == verified or other.strip().startswith(
-                    "npx skills add /path/to/"
-                ), other
+            for invocation in re.findall(r"npx skills add.*", line):
+                assert invocation.strip() == _SKILLS_INSTALL_COMMAND, invocation
 
 
-def test_skills_cli_acceptance_records_command_and_version() -> None:
-    assert "npx skills add LeaderOnePro/mavctl -s mavctl-flight -a claude-code -y" in (
-        _SKILLS_ACCEPTANCE
-    )
+def test_readmes_state_the_skill_install_semantics() -> None:
+    # Minimal semantics both READMEs must carry: the Skill install is
+    # independent of the Python CLI install; the skills CLI picks supported
+    # runtimes by environment/configuration; no promise of covering every
+    # runtime; the acceptance record is linked.
+    independence = ("independent of installing", "相互独立")
+    runtime_choice = ("environment and configuration", "当前环境与配置")
+    for readme in (_README, _ZH_README):
+        assert any(phrase in readme for phrase in independence)
+        assert any(phrase in readme for phrase in runtime_choice)
+        assert "docs/SKILLS_CLI_ACCEPTANCE.md" in readme
+        for overpromise in ("every agent", "all agents", "所有 agent", "全部 agent"):
+            assert overpromise not in readme, overpromise
+
+
+def test_skills_cli_acceptance_records_global_install_and_matrix() -> None:
+    assert _SKILLS_INSTALL_COMMAND in _SKILLS_ACCEPTANCE
     assert "1.5.23" in _SKILLS_ACCEPTANCE
+    assert "PromptScript" in _SKILLS_ACCEPTANCE
+    for agent_id in ("zcode", "claude-code", "codex", "pi"):
+        assert agent_id in _SKILLS_ACCEPTANCE, agent_id
+    assert "--all --copy" in _SKILLS_ACCEPTANCE
+
+
+def test_skills_cli_acceptance_scopes_technical_paths_to_the_record() -> None:
+    # Project-local install, bulk copy and manual linking are documented as
+    # technical reference only — never as README onboarding.
+    assert "project-local" in _SKILLS_ACCEPTANCE
+    assert "manual-linking" in _SKILLS_ACCEPTANCE
+    assert "手动 symlink" in _SKILLS_ACCEPTANCE
+    assert "onboarding" in _SKILLS_ACCEPTANCE
+    assert "技术参考" in _SKILLS_ACCEPTANCE
 
 
 # -- packaging metadata ------------------------------------------------------
