@@ -130,10 +130,12 @@ def test_readme_states_pypi_install_availability() -> None:
 
 
 def test_only_the_released_version_is_claimed_published() -> None:
+    # Both production releases may be claimed as published; no future
+    # version (0.2.2 / 0.3.0 / …) may ever appear as a published claim.
     corpus = f"{_README}\n{_ZH_README}\n{_PUBLISHING}"
     claimed = set(_VERSIONED_PUBLISHED_CLAIM.findall(corpus))
     claimed |= set(_CHINESE_VERSIONED_PUBLISHED_CLAIM.findall(corpus))
-    assert claimed == {"0.2.0"}, claimed
+    assert claimed == {"0.2.0", "0.2.1"}, claimed
 
 
 # -- Chinese README (README_ZH.md) -------------------------------------------
@@ -286,16 +288,27 @@ def test_readmes_highlight_the_021_notable_changes() -> None:
         assert "ground_state_stale" in readme
 
 
-def test_publishing_doc_states_021_not_yet_published() -> None:
-    assert "## Release state before v0.2.1" in _PUBLISHING
-    normalized = " ".join(_PUBLISHING.split())
-    assert (
-        "Production PyPI publication has not happened until this branch is "
-        "merged to main and the v0.2.1 tag is pushed." in normalized
-    )
-
-
 # -- publishing docs ---------------------------------------------------------
+
+
+def test_publishing_doc_records_the_021_production_release() -> None:
+    assert "## Production release record: 0.2.1" in _PUBLISHING
+    assert "mavctl 0.2.1 is published on production PyPI" in _PUBLISHING
+    assert "Released: 2026-08-31" in _PUBLISHING
+    assert "Version: `0.2.1`" in _PUBLISHING
+    assert "GitHub Release: `v0.2.1`" in _PUBLISHING
+    # Recorded verification facts.
+    normalized = " ".join(_PUBLISHING.split())
+    assert "production PyPI JSON metadata" in normalized
+    assert "clean virtual-environment installation" in normalized
+    assert "mavctl --version" in normalized
+    assert "mavctl --help" in normalized
+    assert "mavctl daemon --help" in normalized
+    # Scope note: safety and observability patch release.
+    assert (
+        "0.2.1 is a safety and observability patch release"
+        in " ".join(_PUBLISHING.split())
+    )
 
 
 def test_testpypi_record_keeps_denying_production_equivalence() -> None:
@@ -311,7 +324,7 @@ def test_publishing_doc_records_production_release() -> None:
     assert "wheel and sdist" in _PUBLISHING
     assert "clean-venv install" in _PUBLISHING
     # Forward-only versioning guidance for the next release cycle.
-    assert "0.2.1.dev0" in _PUBLISHING
+    assert "0.2.2.dev0" in _PUBLISHING
     assert "0.3.0.dev0" in _PUBLISHING
     # Whitespace-normalized: the sentence wraps across source lines.
     assert (
