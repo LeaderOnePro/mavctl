@@ -21,10 +21,10 @@ PyPI JSON API returned 404 for `pypi.org/pypi/mavctl/json`).
   - Release tags are strictly `vX.Y.Z` (e.g. `v0.2.0`). The publish workflow
     rejects every other shape and additionally cross-checks that the tag
     equals the package version.
-- The published `0.2.0` is immutable on PyPI. Future cycles move strictly
-  forward from it: develop against `0.2.1.dev0` (patch) or `0.3.0.dev0`
-  (feature/minor) and release later as `0.2.1` / `0.3.0`. Never re-publish an
-  existing version number.
+- The published `0.2.0` and `0.2.1` are immutable on PyPI. The next
+  development version must move forward from 0.2.1, for example
+  `0.2.2.dev0` (patch) or `0.3.0.dev0` (feature/minor), and release later
+  as `0.2.2` / `0.3.0`. Never re-publish an existing version number.
 
 ## Production release record
 
@@ -35,10 +35,25 @@ Production PyPI release: mavctl 0.2.0
 - Published artifacts: wheel and sdist
 - Verification: clean-venv install, `mavctl --help`, `mavctl daemon --help`
 
-## Release state before v0.2.1
+## Production release record: 0.2.1
 
-This release branch prepares mavctl 0.2.1. Production PyPI publication has
-not happened until this branch is merged to main and the v0.2.1 tag is pushed.
+mavctl 0.2.1 is published on production PyPI.
+
+- Released: 2026-08-31
+- Version: `0.2.1`
+- Publishing method: GitHub Actions OIDC Trusted Publishing
+- Published artifacts: wheel and sdist
+- Verification:
+  - production PyPI JSON metadata;
+  - clean virtual-environment installation;
+  - `mavctl --version`;
+  - `mavctl --help`;
+  - `mavctl daemon --help`;
+- GitHub Release: `v0.2.1`
+
+0.2.1 is a safety and observability patch release: it adds stream freshness
+metadata, safer ordinary disarm handling for stale ground evidence, and
+`mavctl --version`.
 
 ## First-release checklist (v0.2.0)
 
