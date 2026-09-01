@@ -35,6 +35,11 @@ Production PyPI release: mavctl 0.2.0
 - Published artifacts: wheel and sdist
 - Verification: clean-venv install, `mavctl --help`, `mavctl daemon --help`
 
+## Release state before v0.2.1
+
+This release branch prepares mavctl 0.2.1. Production PyPI publication has
+not happened until this branch is merged to main and the v0.2.1 tag is pushed.
+
 ## First-release checklist (v0.2.0)
 
 Done:

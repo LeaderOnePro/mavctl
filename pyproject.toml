@@ -1,8 +1,8 @@
 [project]
 name = "mavctl"
-# First formal release. docs/PUBLISHING.md records the release procedure:
-# the v0.2.0 tag is created only after the release PR has merged.
-version = "0.2.0"
+# Release under preparation. docs/PUBLISHING.md records the release procedure:
+# the v0.2.1 tag is created only after the release PR has merged.
+version = "0.2.1"
 description = "Headless, agent-first MAVLink ground-control CLI for ArduPilot vehicles"
 readme = "README.md"
 license = "MIT"
