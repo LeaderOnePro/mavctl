@@ -13,7 +13,7 @@ uv tool install mavctl
 npx skills add LeaderOnePro/mavctl -y -g
 ```
 
-连接飞控后就可以用自然语言指挥你的 Agent 控制无人机了——起飞、悬停、降落、返航，一条指令就够了。
+Connected to a flight controller and you can tell your Agent what to do in plain language — take off, hover, land, RTL, one instruction at a time.
 
 ---
 
