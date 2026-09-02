@@ -4,6 +4,19 @@ English | [简体中文](README_ZH.md)
 
 > Headless, agent-first MAVLink ground-control CLI for ArduPilot vehicles.
 
+---
+
+**Quick start — paste this into any coding agent:**
+
+```bash
+uv tool install mavctl
+npx skills add LeaderOnePro/mavctl -y -g
+```
+
+连接飞控后就可以用自然语言指挥你的 Agent 控制无人机了——起飞、悬停、降落、返航，一条指令就够了。
+
+---
+
 mavctl is **ArduPilot-first** and built to be driven by both humans on a
 terminal and AI coding agents (Claude Code, Codex, OpenClaw, …). A resident
 daemon keeps the MAVLink link alive and caches vehicle state; every CLI call

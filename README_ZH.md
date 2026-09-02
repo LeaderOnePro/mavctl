@@ -4,6 +4,19 @@
 
 > 无图形界面（headless）、Agent 优先的 MAVLink 地面站 CLI，面向 ArduPilot 载具。
 
+---
+
+**直接粘贴给你的 Agent：**
+
+```bash
+uv tool install mavctl
+npx skills add LeaderOnePro/mavctl -y -g
+```
+
+连接飞控后就可以用自然语言指挥你的 Agent 控制无人机了——起飞、悬停、降落、返航，一条指令就够了。
+
+---
+
 mavctl 以 **ArduPilot 为优先目标**，同时为终端前的人类和 AI 编码 agent
 （Claude Code、Codex、OpenClaw 等）而设计。一个常驻 daemon 负责维持 MAVLink
 链路并持续缓存载具状态；每条 CLI 命令都是向它发起的一次简短、结构化的请求。
