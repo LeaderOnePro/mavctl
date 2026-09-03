@@ -22,6 +22,10 @@ htmlcov/
 # mavctl runtime state
 .mavctl/
 
+# Agent tooling — local-only, never commit
+.claude/
+.entire/
+
 # OS / editor
 .DS_Store
 *.swp
