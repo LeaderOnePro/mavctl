@@ -1,0 +1,55 @@
+Skill v1 review 已通过。commit 前做一个小测试语义修正；只修改
+tests/test_skill_docs.py，不修改 Skill 文档、飞控实现、CLI 或测试以外文件。
+
+不要 commit、push、merge、rebase、tag。
+
+当前问题：
+
+test_no_unsupported_dangerous_command_is_invoked 和
+test_force_arm_is_never_an_invocation 直接扫描全文，和测试注释的意图不一致。
+
+文档应当允许在 prose 中写：
+
+- "`mavctl mission` is not implemented yet"
+- "Do not run `mavctl arm --force`; it is unsupported"
+
+但不得把这些写成可执行 command 示例。
+
+## 修改要求
+
+1. 复用或扩展 _code_segments()，只在：
+   - fenced code blocks；
+   - inline code spans；
+   中检查 mavctl command invocation。
+
+2. test_no_unsupported_dangerous_command_is_invoked：
+   - 仅检查 code segment；
+   - 禁止 `mavctl mission` / `mavctl geofence` / `mavctl fence` /
+     `mavctl rally` / `mavctl param` / `mavctl params`；
+   - 正常 prose 中提及这些未来能力不得失败。
+
+3. test_force_arm_is_never_an_invocation：
+   - 仅检查 code segment；
+   - 禁止实际命令形式 `mavctl arm ... --force`；
+   - prose 中“arm --force 不存在/禁止”等说明不得失败。
+
+4. 添加至少两个正向测试，验证：
+   - prose 中说明 “mavctl mission is not implemented” 不会失败；
+   - prose 中说明 “do not run mavctl arm --force” 不会失败；
+   - 但 fenced bash block 中 `mavctl arm --confirm --force` 必须失败；
+   - fenced bash block 中 `mavctl mission upload x` 必须失败。
+
+5. 保持现有真实文档全部通过。
+
+运行：
+
+uv run ruff check .
+uv run mypy .
+uv run pytest tests/test_skill_docs.py -q
+uv run pytest -m "not sitl"
+
+最后汇报：
+- 修改的测试名称；
+- 门禁结果；
+- git status --short；
+- 不要 commit、push、merge、tag。
