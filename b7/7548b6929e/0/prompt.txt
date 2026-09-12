@@ -1,0 +1,93 @@
+mavctl 0.2.0 已于 2026-08-26 正式发布到 production PyPI。
+
+现在创建一个极小的发布后文档修正分支：
+
+docs/post-v0.2.0-release
+
+严格限制：
+- 不修改 package version（保持 0.2.0）；
+- 不修改 publish.yml；
+- 不创建或推送 tag；
+- 不发布任何包；
+- 不修改飞控实现、guards、adapter、daemon、CLI 或 Skill；
+- 不运行 SITL 或真实飞行控制命令；
+- 不开始 Phase 3。
+
+## 修改 README.md
+
+将当前 PyPI 安装区域从“planned / not available yet”更新为正式可用状态。
+
+最终应包含：
+
+## Install from PyPI
+
+```bash
+uv tool install mavctl
+# or run once without a persistent install:
+uvx mavctl --help
+# or:
+pipx install mavctl
+保留从 source 开发安装的说明：
+
+Bash
+
+git clone https://github.com/LeaderOnePro/mavctl.git
+cd mavctl
+uv sync
+uv run mavctl --help
+不要暗示用户应立即连接真实飞行器；保留 SITL-first 安全说明。
+
+修改 docs/PUBLISHING.md
+保留所有历史 TestPyPI rehearsal 内容。
+
+新增或更新生产发布记录：
+
+text
+
+Production PyPI release: mavctl 0.2.0
+Released: 2026-08-26
+Publishing method: GitHub Actions OIDC Trusted Publishing
+Published artifacts: wheel and sdist
+Verification: clean-venv install, mavctl --help, mavctl daemon --help
+不要写入：
+
+token；
+GitHub Actions run URL（可选，但不必硬编码）；
+本地路径；
+raw terminal output。
+更新文档的当前状态：
+
+text
+
+mavctl 0.2.0 is published on production PyPI.
+并在后续发布流程中说明下一版本应从 0.2.0 往前推进，例如
+0.2.1.dev0 或 0.3.0.dev0，不要再写当前版本未发布。
+
+更新 tests/test_project_docs.py
+将“PyPI install 仍不可用”的断言替换为：
+
+README 包含正式 PyPI install heading / wording；
+README 包含：
+uv tool install mavctl
+uvx mavctl --help
+pipx install mavctl
+README 不再包含“package is not published”或 “not available yet”
+作为当前 package install 状态；
+PUBLISHING.md 明确记录 production 0.2.0 release；
+PUBLISHING.md 继续不包含 token patterns；
+保留命令面和 force-arm 安全防线测试。
+验证
+运行：
+
+uv run ruff check .
+uv run mypy .
+uv run pytest -m "not sitl"
+
+不要运行 SITL。
+
+最后输出：
+
+changed files；
+tests result；
+git diff --check；
+不要 commit、push、merge 或创建 GitHub release。
