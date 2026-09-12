@@ -1,0 +1,72 @@
+mavctl 已完成 PyPI publishing preparation。现在只进行一次 TestPyPI release rehearsal，
+不发布正式 PyPI、不修改 main 版本、不打正式 release tag、不开始 Phase 3。
+
+先不要上传任何内容。先执行只读准备检查并汇报，然后等待我确认。
+
+## 1. 检查当前状态
+
+执行：
+
+git switch main
+git pull --ff-only origin main
+git status --short
+git tag --sort=-creatordate
+grep -n '^version' pyproject.toml
+uv build
+ls -lh dist/
+uvx twine check dist/*
+
+确认当前版本仍是：
+
+0.2.0.dev0
+
+并明确说明：
+
+- TestPyPI 不允许重复上传同一 distribution version；
+- 当前若上传 `0.2.0.dev0`，以后需使用更高 dev version 才能再次上传；
+- 这是 TestPyPI rehearsal，不会影响 pypi.org；
+- 任何上传前必须由我明确确认。
+
+## 2. 准备并输出上传命令，但不要执行
+
+根据 uv 当前版本和 docs/PUBLISHING.md，输出准备好的命令：
+
+```bash
+export UV_PUBLISH_USERNAME=__token__
+export UV_PUBLISH_PASSWORD=<TEST_PYPI_TOKEN>
+uv publish --publish-url https://test.pypi.org/legacy/
+```
+
+不要要求我把 token 发给你，也不要把 token 写进文件、shell history、GitHub secret 或日志。
+
+## 3. 准备安装验证命令，但不要执行
+
+输出使用 TestPyPI 安装后的验证命令，必须避免意外从正式 PyPI 拉取同名包：
+
+```bash
+uv venv /tmp/mavctl-testpypi-smoke
+VIRTUAL_ENV=/tmp/mavctl-testpypi-smoke \
+  uv pip install \
+  --index-url https://test.pypi.org/simple/ \
+  --extra-index-url https://pypi.org/simple/ \
+  mavctl==0.2.0.dev0
+
+/tmp/mavctl-testpypi-smoke/bin/mavctl --help
+/tmp/mavctl-testpypi-smoke/bin/mavctl daemon --help
+```
+
+解释：
+- 为什么需要 `--extra-index-url https://pypi.org/simple/` 来获取 pymavlink、
+  typer、pydantic 等依赖；
+- 为什么必须 pin 精确版本；
+- 如何确认真正安装的是 TestPyPI 的 mavctl，而不是本地源码或正式 PyPI 包。
+
+## 4. 停止
+
+不要上传，不要创建 token，不要运行安装验证，不要修改文件。
+只汇报：
+- 当前 dist 文件名；
+- 当前版本；
+- TestPyPI 版本不可重传的注意事项；
+- 需要我手动提供/执行的步骤；
+- 准备好的上传与安装验证命令。
