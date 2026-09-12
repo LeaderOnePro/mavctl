@@ -1,0 +1,150 @@
+这次是发布后状态同步，改动范围合理，且不涉及运行时或安全逻辑。根据汇报，**可以提交、开 PR 并合并**，不需要再跑 SITL。
+
+当前应合并后让 `main` 的公开文档与 PyPI 实际状态一致：
+
+```text
+main
+├── v0.2.0
+├── PyPI 已正式发布
+├── README 可直接指导 uv / uvx / pipx 安装
+└── PUBLISHING.md 保留 TestPyPI 演练和正式发布记录
+```
+
+## 给 Claude Code 的下一条指令
+
+```text
+发布后文档修正已通过 review。现在完成提交、PR 和合并。
+
+严格限制：
+- 只处理 docs/post-v0.2.0-release 分支；
+- 不修改 package version（保持 0.2.0）；
+- 不修改 publish.yml；
+- 不创建 tag；
+- 不上传 PyPI；
+- 不创建 GitHub Release；
+- 不修改飞控实现、CLI、Skill、guards、adapter 或 daemon；
+- 不运行 SITL 或任何飞行控制命令；
+- 若门禁失败，停止并汇报，不要 merge。
+
+## 1. 最终核对
+
+确认当前分支：
+
+docs/post-v0.2.0-release
+
+执行：
+
+git status --short
+git diff --check
+git diff --stat origin/main...HEAD
+uv run ruff check .
+uv run mypy .
+uv run pytest -m "not sitl"
+
+确认预期修改仅为：
+
+- README.md
+- docs/PUBLISHING.md
+- tests/test_project_docs.py
+
+## 2. Commit
+
+使用 Conventional Commit：
+
+docs: record v0.2.0 PyPI release
+
+提交后输出：
+
+git show --stat --oneline HEAD
+git status --short
+
+## 3. Push 与 PR
+
+推送：
+
+git push -u origin docs/post-v0.2.0-release
+
+创建 PR：
+
+main <- docs/post-v0.2.0-release
+
+PR 标题：
+
+docs: record v0.2.0 PyPI release
+
+PR 描述：
+
+### Scope
+- Updated README with current production PyPI installation commands.
+- Recorded the successful `mavctl 0.2.0` production PyPI release.
+- Preserved the historical TestPyPI rehearsal record.
+- Updated documentation consistency tests for the released state.
+
+### Release facts
+- `mavctl==0.2.0` is published on production PyPI.
+- Published through GitHub Actions OIDC Trusted Publishing.
+- Wheel and sdist were verified from a clean virtual environment.
+- No token, local path, raw terminal output, or credential is documented.
+
+### Validation
+- ruff passed.
+- mypy strict passed.
+- pytest -m "not sitl": 178 passed.
+- No runtime, flight-control, packaging-version, or publish-workflow behavior changed.
+
+## 4. Merge
+
+确认 PR 为 CLEAN / MERGEABLE 后，使用 squash merge：
+
+docs/post-v0.2.0-release → main
+
+建议 squash commit message：
+
+docs: record v0.2.0 PyPI release
+
+合并后：
+
+git switch main
+git pull --ff-only origin main
+git status --short
+git log --graph --oneline --decorate -15
+
+运行：
+
+uv run ruff check .
+uv run mypy .
+uv run pytest -m "not sitl"
+
+不要运行 SITL，不要 build，不要 publish，不要创建 tag。
+
+## 5. 最终报告
+
+仅汇报：
+
+1. PR URL 与最终状态；
+2. squash merge commit SHA；
+3. main HEAD；
+4. main 上 ruff / mypy / pytest 非 SITL 结果；
+5. git status --short；
+6. 明确确认：
+   - PyPI 版本仍为 0.2.0；
+   - 未创建新 tag；
+   - 未发布新包；
+   - 未开始 Phase 3；
+   - 未修改飞控实现。
+```
+
+---
+
+合并后你可以做两件产品层面的事：
+
+1. **创建 GitHub Release 页面**，关联已存在的 `v0.2.0` tag；
+2. 发一条简短公告，核心安装命令就是：
+
+```bash
+uv tool install mavctl
+# 或
+uvx mavctl --help
+```
+
+之后才建议进入 **Phase 3 的 mission protocol 设计**。
