@@ -1,0 +1,299 @@
+我要准备 mavctl 的首次正式 PyPI release：0.2.0。
+
+前提已由我人工完成：
+- GitHub 仓库已公开；
+- TestPyPI rehearsal 已成功完成，且 TestPyPI token 已撤销；
+- 正式 PyPI 的 Pending Trusted Publisher 已配置：
+  project=mavctl, owner=LeaderOnePro, repository=mavctl,
+  workflow=publish.yml, environment 留空；
+- 当前 production PyPI 尚未发布 mavctl。
+
+现在只执行“Release PR 准备阶段”。
+
+严格禁止：
+- 不创建任何 git tag；
+- 不推送 v0.2.0；
+- 不触发或执行 uv publish；
+- 不修改 GitHub Actions publish workflow；
+- 不修改飞控实现、guards、adapter、daemon、CLI 语义或 exit-code 契约；
+- 不删除历史分支、tag 或 backup；
+- 不执行真实 mavctl 飞行控制命令；
+- 若发现生产 PyPI 上 mavctl 或版本 0.2.0 已存在，立即停止并汇报。
+
+## 0. 先做发布前状态核对
+
+执行并原样汇报：
+
+git fetch origin --prune
+git switch main
+git pull --ff-only origin main
+git status --short
+git log --graph --oneline --decorate -20
+git tag --sort=-creatordate
+grep -n '^version' pyproject.toml
+git ls-remote --tags origin 'v0.2.0'
+git ls-remote --heads origin 'release/0.2.0'
+
+然后通过 PyPI JSON API 检查，不要上传任何内容：
+
+python3 - <<'PY'
+from urllib.error import HTTPError
+from urllib.request import urlopen
+
+url = "https://pypi.org/pypi/mavctl/json"
+try:
+    with urlopen(url, timeout=15) as response:
+        print("PyPI project lookup:", response.status)
+        print(response.read(1000).decode("utf-8", errors="replace"))
+except HTTPError as exc:
+    print("PyPI project lookup HTTP status:", exc.code)
+PY
+
+解释结果：
+
+- 若 404：项目名仍未在正式 PyPI 存在，可继续；
+- 若项目存在：进一步检查 0.2.0 是否已存在；不要假设可覆盖；
+- 若网络/API 出错：停止，不要猜测名称可用。
+
+确认当前 pyproject 版本是：
+
+0.2.0.dev0
+
+确认当前正式 tag 中不存在：
+
+v0.2.0
+
+## 1. 创建 release 分支
+
+仅在所有预检通过后：
+
+git switch -c release/0.2.0 origin/main
+
+## 2. 进行正式 release 元数据更新
+
+只修改与正式 0.2.0 release 必要相关的文件。
+
+### pyproject.toml
+
+将：
+
+version = "0.2.0.dev0"
+
+改为：
+
+version = "0.2.0"
+
+保留其余 package metadata、dependencies、entrypoint 和 build 配置不变。
+
+### uv.lock
+
+使用 uv 正确刷新 lockfile，使本项目自身版本与 0.2.0 一致。
+
+### README.md
+
+将当前 PyPI 安装部分从“planned / not available yet”改成正式可用的安装说明。
+
+最终 README 必须准确表达：
+
+```bash
+uv tool install mavctl
+uvx mavctl --help
+pipx install mavctl
+```
+
+仅在 PyPI 正式发布成功后才可执行；但 release PR 的 README 应按即将发布的
+0.2.0 状态写，不应继续说 package 未发布。
+
+建议增加简短提示：
+
+```text
+For development from source, use uv sync and uv run mavctl ...
+```
+
+保留 source install 方法。
+
+不要将 `uvx mavctl --help` 描述为当前已经验证完成，直到实际 release 完成；
+可以写为：
+
+```text
+After the PyPI release is published, install with:
+```
+
+或：
+
+```text
+Published releases can be installed with:
+```
+
+确保措辞不会承诺 TestPyPI package 等同于正式 PyPI。
+
+### docs/PUBLISHING.md
+
+保留 TestPyPI rehearsal record。
+
+更新正式发布 checklist，使其反映当前状态：
+
+- release branch prepared；
+- pending publisher configured；
+- version changed to 0.2.0；
+- formal tag `v0.2.0` 尚未创建；
+- production PyPI 尚未发布；
+- release PR merge 后才允许打 tag。
+
+不要提前写“production PyPI release successful”。
+
+可增加一个明确小节：
+
+```text
+## Release state before v0.2.0
+
+This branch prepares version 0.2.0. Production publication has not happened
+until main contains this version and tag v0.2.0 has been pushed successfully.
+```
+
+### 文档一致性测试
+
+更新 `tests/test_project_docs.py` 和必要的 Skill 文档测试，使其与
+“release branch 的即将正式发布状态”一致：
+
+- 不再强制 README 必须写 “not available yet”；
+- 改为验证 README 对 PyPI install 的措辞是 conditional / release-aware，
+  不把 TestPyPI rehearsal 误写成正式 PyPI 可用；
+- 保持以下防线：
+  - README 不展示 `mavctl arm --force`；
+  - 不展示未实现 mission/param/geofence 命令；
+  - Quickstart 保持 SITL-first、--confirm、armed=true 轮询、RTL/land；
+  - publish workflow 必须严格限制 `vX.Y.Z`；
+  - publish workflow 有 OIDC `id-token: write`；
+  - publishing 文档不得包含 token；
+- 增加测试确认：
+  - pyproject version 是正式 PEP 440 `0.2.0`；
+  - README 明确包含 `uv tool install mavctl`、`uvx mavctl --help`、
+    `pipx install mavctl`；
+  - README 不得声称 TestPyPI 等于生产 PyPI；
+  - 文档不得声称 production PyPI 已发布成功。
+
+不要修改 publish.yml；它应继续要求 tag 与 package version 精确匹配。
+
+## 3. 完整 release 验证
+
+在 release/0.2.0 分支上执行：
+
+git diff --check
+uv run ruff check .
+uv run mypy .
+uv run pytest -m "not sitl"
+uv build
+uvx twine check dist/*
+
+然后检查生成产物：
+
+python3 - <<'PY'
+from pathlib import Path
+import importlib.metadata
+import zipfile
+
+wheels = sorted(Path("dist").glob("mavctl-0.2.0-*.whl"))
+sdists = sorted(Path("dist").glob("mavctl-0.2.0.tar.gz"))
+assert len(wheels) == 1, wheels
+assert len(sdists) == 1, sdists
+
+wheel = wheels[0]
+with zipfile.ZipFile(wheel) as archive:
+    metadata_name = next(
+        name for name in archive.namelist()
+        if name.endswith(".dist-info/METADATA")
+    )
+    metadata = archive.read(metadata_name).decode("utf-8")
+
+assert "Version: 0.2.0" in metadata
+assert "License-Expression: MIT" in metadata
+assert "Name: mavctl" in metadata
+
+print("wheel:", wheel)
+print("sdist:", sdists[0])
+print("metadata validation: passed")
+PY
+
+若本地 ArduPilot SITL 正在运行，则也执行：
+
+uv run pytest -m sitl
+
+若 SITL 没运行，不要自行启动；如实报告未运行即可。
+
+## 4. Commit、push、创建 Release PR；但绝不 merge
+
+确认所有验证通过后：
+
+git status --short
+
+确认修改范围只包括 release metadata / docs / tests / uv.lock，且不包含
+飞控实现代码。
+
+提交信息：
+
+chore(release): prepare v0.2.0
+
+推送：
+
+git push -u origin release/0.2.0
+
+创建 PR：
+
+main <- release/0.2.0
+
+PR 标题：
+
+chore(release): prepare v0.2.0
+
+PR 描述必须包含：
+
+### Release
+- Package version changes from `0.2.0.dev0` to `0.2.0`.
+- No Git release tag has been created yet.
+- No package has been published to production PyPI yet.
+
+### Included product scope
+- Phase 1 daemon/status/telemetry.
+- Phase 2 guarded flight controls and MAVLink transaction safety.
+- mavctl-flight Agent Skill v1.
+- README, MIT license, Trusted Publishing workflow, TestPyPI rehearsal record.
+
+### Validation
+- ruff
+- mypy strict
+- pytest -m "not sitl"
+- uv build
+- twine check
+- wheel metadata verification
+- SITL result, if it was available
+
+### Publish procedure after PR merge
+1. Verify main is at the release commit.
+2. Create and push annotated tag `v0.2.0`.
+3. GitHub Actions Publish to PyPI workflow validates tag/version and uses OIDC.
+4. Verify installation in a clean environment with `uvx mavctl --help`.
+
+## 5. Stop and report
+
+Do not merge the release PR.
+Do not create `v0.2.0`.
+Do not run `uv publish`.
+Do not create a GitHub Release.
+
+Only report:
+
+1. PyPI name/version preflight result;
+2. release branch HEAD SHA;
+3. changed file list;
+4. PR URL and status;
+5. exact pyproject version;
+6. ruff / mypy / pytest / uv build / twine / metadata results;
+7. SITL result or “not run because SITL was not running”;
+8. final git status;
+9. explicit confirmation:
+   - no tag created;
+   - no production PyPI publication;
+   - no release PR merge;
+   - no flight-control implementation changes.
+```
