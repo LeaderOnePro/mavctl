@@ -1,0 +1,334 @@
+Phase 2 和 mavctl-flight Skill v1 已合并到 main。
+
+现在开始一个“项目入口与发布准备”工作，不开始 Phase 3，也不实际发布 PyPI。
+
+新建分支：
+
+feat/project-readme-and-publishing
+
+严格约束：
+
+- 不修改飞控实现、guards、adapter、daemon、CLI 语义；
+- 不改变 exit-code 契约；
+- 不运行任何真实 mavctl 飞行控制命令；
+- 不修改已发布 tag；
+- 不实际上传 PyPI；
+- 不创建 GitHub release；
+- 不开始 mission / parameter / geofence 功能；
+- 所有文档必须以当前 main 的真实行为为准，不得臆造 future CLI。
+
+## 1. README.md
+
+如果 README.md 不存在，创建它；如果存在，重写/完善为项目的主入口文档。
+
+README 必须包含：
+
+### 标题与一句话定位
+
+例如：
+
+# mavctl
+
+> Headless, agent-first MAVLink ground-control CLI for ArduPilot vehicles.
+
+同时清楚写明：
+
+- ArduPilot-first；
+- 面向 humans 和 AI coding agents；
+- 基于 daemon + CLI；
+- 当前主要在 ArduPilot SITL 上验证；
+- 不要宣称已支持所有 MAVLink vehicle 或已适合生产真机飞行。
+
+### Why mavctl
+
+简短说明：
+
+- GUI GCS（Mission Planner / QGroundControl）适合人工操控；
+- mavctl 是给 shell、脚本和 agent 的结构化接口；
+- daemon 保持 MAVLink 链路与状态；
+- CLI 输出 JSON、明确 exit code、安全护栏；
+- 不内置 LLM，而是能被 Claude Code / Codex / OpenClaw 等调用。
+
+### Current capabilities
+
+准确列出已实现：
+
+```bash
+mavctl daemon start|stop|status
+mavctl status
+mavctl telemetry
+mavctl arm
+mavctl disarm
+mavctl mode <MODE>
+mavctl takeoff --alt <metres>
+mavctl land
+mavctl rtl
+```
+
+写出：
+
+- JSON: `--json`
+- confirmation: `--confirm`
+- preview: `--dry-run`
+- wait: `--wait --timeout`
+- idempotent behavior
+- MAVLink command transaction safety
+
+并写清当前未实现：
+
+```text
+Mission upload/download/start
+Parameters
+Geofence
+Log download / analysis
+Firmware flashing
+Multi-vehicle orchestration
+```
+
+不要写成 roadmap 承诺，只说 current scope。
+
+### Quickstart with ArduPilot SITL
+
+提供 macOS/Linux 风格的最小真实步骤：
+
+```bash
+# In one terminal: start existing ArduPilot SITL
+sim_vehicle.py -v ArduCopter --out udp:127.0.0.1:14550
+
+# In another terminal: install/run mavctl from source
+uv sync
+uv run mavctl daemon start --connect udp:127.0.0.1:14550
+uv run mavctl status --json
+```
+
+再给安全起飞并 RTL 的完整 sequence：
+
+```bash
+uv run mavctl mode GUIDED --confirm --wait
+uv run mavctl arm --confirm
+# Poll status --json until armed=true
+uv run mavctl takeoff --alt 10 --confirm --wait --timeout 45
+uv run mavctl rtl --confirm --wait --timeout 120
+uv run mavctl daemon stop
+```
+
+必须强调：
+- SITL first；
+- 不要直接将 agent 流程用于真实飞行器；
+- arm ACK 可能早于 heartbeat armed=true；
+- 正常结束优先 RTL/land，不要用 disarm；
+- `disarm --force` 是紧急停桨；
+- 不存在 `arm --force`。
+
+### Installation
+
+区分：
+
+1. 当前从 source 的支持方式：
+
+```bash
+git clone ...
+cd mavctl
+uv sync
+uv run mavctl --help
+```
+
+2. Planned PyPI install（明确尚未发布）：
+
+```text
+PyPI publishing is being prepared. Future intended commands:
+uv tool install mavctl
+uvx mavctl --help
+pipx install mavctl
+```
+
+这些命令必须标为 future / not available yet，不能写成当前可执行指令。
+
+### Agent Skill
+
+说明 repo 中有：
+
+```text
+skills/mavctl-flight/
+```
+
+并说明它是 portable source asset。
+
+不要硬编码可能过时的 Claude Code 用户级 skill 安装路径。可以说明：
+
+```text
+To use it with an agent runtime, install or symlink this directory according
+to that runtime's current Skill discovery convention.
+```
+
+并给仓库开发场景下可选示例：
+
+```bash
+mkdir -p .claude/skills
+ln -s ../../skills/mavctl-flight .claude/skills/mavctl-flight
+```
+
+明确这是 Claude Code project-local example，不保证所有 runtime 相同。
+
+### Safety model
+
+摘要链接 / 说明：
+
+- daemon owns vehicle link;
+- dangerous commands require confirm;
+- dry run;
+- link loss exit 4;
+- guard rejection exit 5;
+- vehicle NACK/timeout exit 6;
+- no force arm;
+- positive ground evidence before ordinary disarm;
+- status can contain cached data after link loss.
+
+### Development
+
+提供真实命令：
+
+```bash
+uv sync
+uv run ruff check .
+uv run mypy .
+uv run pytest -m "not sitl"
+uv run pytest -m sitl  # requires running SITL
+```
+
+链接：
+
+- `docs/SITL_ACCEPTANCE.md`
+- `docs/SITL_ACCEPTANCE_PHASE2.md`
+- `AGENTS.md`
+- `skills/mavctl-flight/SKILL.md`
+
+## 2. LICENSE
+
+检查是否已有 LICENSE。
+
+- 若没有，新增 MIT LICENSE，copyright holder 使用：
+  LeaderOnePro
+- 若已有，确认 `pyproject.toml` 和 README 中与它一致。
+- 不要变更 pymavlink / ArduPilot 等第三方协议描述；只处理 mavctl 自己的 LICENSE。
+
+## 3. pyproject.toml 发布元数据
+
+补齐但不发布：
+
+- name = "mavctl"
+- version：不要把 `v0.2.0-phase2` 直接当作 PyPI release version。
+  使用一个合法 PEP 440 development/pre-release version，例如：
+  `0.2.0.dev0` 或合理替代；说明选择原因。
+- description
+- readme = "README.md"
+- license
+- requires-python
+- authors / maintainers（如已有信息则保留，不臆造私人邮箱）
+- classifiers：Python、license、OS、development status、topic
+- project.urls：
+  Homepage
+  Repository
+  Issues
+  Documentation（若尚无 docs site，可不填或指向 GitHub docs）
+- [project.scripts] 保持现有 mavctl entrypoint，不改行为。
+
+不要加 npm、Node、npx 包装。
+
+## 4. PyPI Trusted Publishing workflow
+
+添加：
+
+```text
+.github/workflows/publish.yml
+```
+
+要求：
+
+- trigger：push `v*` tag；
+- 明确只接受 PEP 440 正式 release tag 格式，例如 `v0.2.0`；
+  不要自动发布 `v0.2.0-phase2`；
+- 先运行：
+  - ruff
+  - mypy
+  - pytest -m "not sitl"
+- 用 uv build 构建；
+- 用 PyPI Trusted Publishing / OIDC 发布；
+- 不使用或要求 PyPI API token；
+- 采用官方 `pypa/gh-action-pypi-publish`；
+- workflow 必须有正确 permissions：
+  `id-token: write`
+- 通过 workflow 注释或 docs 明确说明：
+  - GitHub Actions 文件合入后；
+  - 你还需去 PyPI 手动配置 Trusted Publisher；
+  - repo / owner / workflow filename / environment（如使用）要匹配；
+  - 在真正创建正式 `v0.2.0` tag 前，先用 TestPyPI 或 dry-run 验证。
+
+不要 actual publish。
+
+## 5. 发布前验证文档
+
+新增：
+
+```text
+docs/PUBLISHING.md
+```
+
+包含：
+
+- PyPI 名称 `mavctl` 已确认未占用（若这条是历史信息，请标为“需要发布前再次确认”）；
+- 首次发布前 checklist；
+- PyPI Trusted Publisher 的手工配置步骤；
+- 如何从本地运行：
+  ```bash
+  uv build
+  ```
+- 如何检查 dist 产物；
+- 如何在 TestPyPI 演练；
+- 正式 tag 命名规则：
+  ```text
+  vX.Y.Z
+  ```
+- 明确：
+  ```text
+  v0.2.0-phase2 is a Git milestone tag, not a PyPI release tag.
+  ```
+- 发布后如何验证：
+  ```bash
+  uvx mavctl --help
+  ```
+  但标注为“发布成功后”。
+
+## 6. 自动化验证
+
+新增 README/metadata/workflow 文档一致性测试，或扩展现有文档测试。
+
+至少验证：
+
+- README 不把 PyPI install commands 表述为当前已可用；
+- README 不出现 `mavctl arm --force` 作为 command；
+- README 当前命令列表不包含 mission / param / geofence；
+- README Quickstart 中有 `--confirm`、SITL、`armed=true` polling、RTL 或 land；
+- pyproject.toml 的 readme 指向 README.md；
+- publish workflow 不会匹配 `v0.2.0-phase2`；
+- publish workflow 含 `id-token: write`；
+- 不需要测试 GitHub Actions 的完整执行，只检查 YAML 文本/结构即可。
+
+## 7. 执行门禁
+
+运行：
+
+uv run ruff check .
+uv run mypy .
+uv run pytest -m "not sitl"
+uv build
+
+最后汇报：
+
+- 新增/修改文件；
+- pyproject version 选择与理由；
+- publish workflow trigger 规则；
+- 我需要在 PyPI 网站手动完成的步骤；
+- 文档/元数据一致性测试方式；
+- 全部门禁与 uv build 结果；
+- 不要 commit、push、merge、tag、publish。
