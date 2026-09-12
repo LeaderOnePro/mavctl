@@ -1,0 +1,107 @@
+PR #3 已通过最终人工安全 review。现在执行最终合并、main 回归验证与 Phase 2 tag。
+
+严格要求：
+- 只处理 PR #3、main 和 v0.2.0-phase2；
+- 不开始 Agent Skill、PyPI 发布、README 大改或 Phase 3；
+- 不删除 backup/pr3-pre-rebase；
+- 若任一合并后验证失败，停止并汇报，不要打 tag。
+
+## 1. 合并前最后核对
+
+执行：
+
+git fetch origin --prune
+git switch fix/command-transaction-safety
+git status --short
+git diff --check origin/main...HEAD
+git log --oneline origin/main..HEAD
+git diff --stat origin/main...HEAD
+
+确认：
+
+- 当前分支是 fix/command-transaction-safety；
+- 工作树 clean；
+- PR #3 仍为 main <- fix/command-transaction-safety；
+- PR #3 状态 OPEN、MERGEABLE/CLEAN；
+- 安全提交范围仍仅为：
+  - 6d92fef fix(transaction): atomic ACK + command lock + IN_PROGRESS + link-loss safety
+  - 86fe2e6 fix(safety): harden disarm state checks and remove force arm
+
+## 2. Squash merge PR #3
+
+使用 GitHub squash merge 合并：
+
+fix/command-transaction-safety → main
+
+不要使用 merge commit。
+
+建议 squash commit message：
+
+fix(safety): harden MAVLink command transaction safety
+
+PR #3 squash commit 内容应概括：
+
+- serialize daemon and adapter command transactions;
+- validate and lock MAVLink ACK / telemetry sources;
+- quarantine late ACKs after command timeout;
+- map link loss during --wait to exit 4;
+- handle MAV_RESULT_IN_PROGRESS correctly;
+- require positive ground evidence before non-force disarm;
+- remove force-arm at CLI, RPC, adapter levels;
+- reject invalid timeout / non-finite altitude inputs;
+- preserve agent-friendly structured error semantics.
+
+## 3. 合并后 main 回归验证
+
+合并完成后：
+
+git switch main
+git pull --ff-only origin main
+git status --short
+git log --graph --oneline --decorate -20
+
+确认 main 中包含 PR #3 的 squash commit，且 PR #3 状态为 MERGED。
+
+然后在 main 上运行：
+
+uv run ruff check . &&
+uv run mypy . &&
+uv run pytest -m "not sitl"
+
+若本地 SITL 仍运行，再运行：
+
+uv run pytest -m sitl
+
+只有所有检查通过，才继续下一步。
+
+## 4. 打 Phase 2 release tag
+
+在 main 当前 HEAD 创建 annotated tag：
+
+git tag -a v0.2.0-phase2 -m "Phase 2: guarded flight control and MAVLink transaction safety"
+git push origin v0.2.0-phase2
+
+然后确认：
+
+git show v0.2.0-phase2 --stat
+git ls-remote --tags origin "v0.2.0-phase2"
+git status --short
+
+## 5. 最终报告
+
+停止后只汇报：
+
+1. PR #3 squash merge commit SHA；
+2. main 当前 HEAD SHA；
+3. tag v0.2.0-phase2 指向的 SHA；
+4. PR #2 与 PR #3 最终状态；
+5. main 上 ruff / mypy / non-SITL pytest / SITL pytest 结果；
+6. git status --short；
+7. 当前保留的分支：
+   - main
+   - fix/command-transaction-safety
+   - backup/pr3-pre-rebase
+   - feat/flight-control
+8. 明确确认：没有开始 Phase 3、Skill、PyPI 发布。
+
+若某一步失败，不要打 tag，并提供完整失败输出。
