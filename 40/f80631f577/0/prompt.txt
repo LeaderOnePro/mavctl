@@ -1,0 +1,219 @@
+This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.
+
+Summary:
+1. Primary Request and Intent:
+   The user requested a P0/P1 safety and concurrency fix for mavctl's command handling. Specifically:
+   
+   **P0 requirements:**
+   - Adapter: atomic command transaction wrapping send+ACK+retry in a threading lock so concurrent CLI/RPC calls can't interleave or steal ACKs
+   - Daemon: asyncio command lock so state-read → guard → dry-run/idempotent → execute → wait is one serial transaction for dangerous commands; status/telemetry remain concurrent
+   - ACK source validation: only accept COMMAND_ACK from locked target_system + target_component (MAV_COMP_ID_AUTOPILOT1)
+   
+   **P1 requirements:**
+   - --wait link-loss: poll `state.connected` during wait; if link drops mid-wait → return exit 4 (not exit 6) with `reason: link_lost_during_wait`
+   - IN_PROGRESS semantics: MAV_RESULT_IN_PROGRESS(5) counts as accepted, not NACK; continue --wait
+   - Heartbeat filtering: lock onto first autopilot heartbeat; ignore non-autopilot components
+   - Add WaitStatus enum (NOT_WAITED/REACHED/TIMEOUT/LINK_LOST)
+   
+   Then run full gates and report. Do NOT merge PR #2.
+
+2. Key Technical Concepts:
+   - MAVLink COMMAND_LONG / COMMAND_ACK transaction model
+   - Thread-safe adapter using `threading.Lock` (command lock) + `threading.Condition` (ACK rendezvous)
+   - Asyncio `asyncio.Lock` for daemon-side command serialization (TOCTOU prevention)
+   - Heartbeat component filtering: `MAV_COMP_ID_AUTOPILOT1` locking pattern
+   - Exit code contract: 4 = not connected, 5 = guard rejected, 6 = NACK/timeout
+   - Pydantic models (`CommandOutcome`, `WaitStatus`) shared across layers
+   - Fake adapters with mutable snapshots for testability
+
+3. Files and Code Sections:
+
+   - **src/mavctl/models/commands.py**
+     - Added `WaitStatus` enum and `_ACCEPTED_RESULTS` frozenset
+     - Updated `CommandOutcome.from_ack` to handle IN_PROGRESS
+     ```python
+     MAV_RESULT_IN_PROGRESS = 5
+     _ACCEPTED_RESULTS = frozenset({0, 5})
+     
+     class CommandOutcome(BaseModel):
+         accepted: bool
+         in_progress: bool = False
+         ...
+         @classmethod
+         def from_ack(cls, result_code: int, attempts: int) -> CommandOutcome:
+             return cls(
+                 accepted=result_code in _ACCEPTED_RESULTS,
+                 in_progress=result_code == MAV_RESULT_IN_PROGRESS,
+                 ...
+             )
+     
+     class WaitStatus(str, Enum):
+         NOT_WAITED = "not_waited"
+         REACHED = "reached"
+         TIMEOUT = "timeout"
+         LINK_LOST = "link_lost"
+     ```
+
+   - **src/mavctl/adapter/pymavlink_adapter.py**
+     - Added `_command_lock` and `_target_locked` flags
+     - Wrapped `_send_command` in command lock, clearing stale ACKs
+     - Added heartbeat component filtering
+     - Added ACK source validation
+     ```python
+     # In __init__:
+     self._command_lock = threading.Lock()
+     self._target_locked = False
+     
+     def _send_command(...):
+         with self._command_lock:
+             with self._ack_cond:
+                 self._acks.pop(command, None)  # clear stale
+             for attempt in range(1, attempts + 1):
+                 ...
+     
+     def _on_heartbeat(self, msg):
+         src_system = msg.get_srcSystem()
+         src_component = msg.get_srcComponent()
+         if not self._target_locked:
+             if src_component != MAV_COMP_ID_AUTOPILOT1:
+                 return  # ignore non-autopilot
+             self._target_system = src_system
+             self._target_component = src_component
+             self._target_locked = True
+         elif ... different target:
+             return
+         ...
+     
+     def _on_command_ack(self, msg):
+         if (msg.get_srcSystem() != self._target_system
+             or msg.get_srcComponent() != self._target_component):
+             return  # source validation
+         ...
+     ```
+
+   - **src/mavctl/daemon/server.py**
+     - Added `asyncio.Lock` command lock
+     - Wrapped all command handlers with `async with self._command_lock`
+     - Added `_maybe_wait` returning `WaitStatus` with link-loss check
+     - Added `_finish_wait` for proper exit code mapping
+     ```python
+     self._command_lock = asyncio.Lock()
+     
+     async def _m_arm(self, request):
+         async with self._command_lock:
+             ...
+     
+     async def _maybe_wait(self, params, predicate):
+         if not _flag(params, "wait"):
+             return WaitStatus.NOT_WAITED
+         timeout = _timeout(params)
+         deadline = loop.time() + timeout
+         while loop.time() < deadline:
+             if not self._adapter.get_state().connected:
+                 return WaitStatus.LINK_LOST
+             if predicate():
+                 return WaitStatus.REACHED
+             await asyncio.sleep(_WAIT_POLL_INTERVAL)
+         ...
+     
+     def _finish_wait(self, action, outcome, params, status, timeout_detail):
+         if status is WaitStatus.LINK_LOST:
+             return DaemonResponse.failure(ExitCode.VEHICLE_NOT_CONNECTED, ...)
+         if status is WaitStatus.TIMEOUT:
+             return DaemonResponse.failure(ExitCode.NACK_TIMEOUT, ...)
+         ...
+     ```
+
+   - **tests/test_adapter.py**
+     - Added `threading` import, removed `SimpleNamespace`
+     - Updated `_wire_acks` to deliver ACKs from correct src
+     - New tests: IN_PROGRESS accepted, wrong-source ACK ignored, autopilot lock, multi-component heartbeat filter, concurrent command serialization
+     ```python
+     def test_concurrent_commands_are_serialized_no_cross_ack():
+         # arm + disarm run concurrently via threads
+         # asserts overlap["seen"] is False, both accepted=True, len(sent)==2
+     
+     def test_ack_from_wrong_source_is_ignored():
+         adapter._on_command_ack(FakeMsg("COMMAND_ACK", src_system=7, src_component=99, ...))
+         assert outcome.timed_out is True
+     
+     def test_non_autopilot_heartbeat_does_not_update_snapshot():
+         adapter._on_heartbeat(_hb(1, 154, armed=False, ...))  # gimbal
+         assert after.armed is True  # unchanged by non-autopilot
+     ```
+
+   - **tests/test_server.py** (complete rewrite)
+     - `FakeAdapter` now mutates state on command calls for --wait to work
+     - `_state()` includes `heartbeat_age_s=0.2` for connected states
+     - Added `_BlockingArmAdapter` with threading Event for lock tests
+     - New tests: IN_PROGRESS accepted, IN_PROGRESS+wait continues, DENIED exit 6, wait link-loss exit 4, command lock serializes + status stays live
+     ```python
+     class _LinkDropAdapter(FakeAdapter):
+         def get_state(self):
+             self._reads += 1
+             if self._reads <= 1:
+                 return self._state
+             return self._state.model_copy(update={"connected": False, "heartbeat_age_s": 9.0})
+     
+     async def test_wait_link_loss_returns_exit_4_not_timeout():
+         # uses _LinkDropAdapter
+         assert response.error.code == ExitCode.VEHICLE_NOT_CONNECTED
+         assert response.error.detail["reason"] == "link_lost_during_wait"
+     ```
+
+   - **src/mavctl/models/__init__.py** — added `WaitStatus` to exports
+   - **src/mavctl/daemon/guards.py** — unchanged (from prior session, already has shared connection gate)
+   - **src/mavctl/adapter/base.py** — unchanged (Protocol already has control verbs)
+
+4. Errors and Fixes:
+   - **mypy error `object has no attribute 'accepted'`** in test_adapter.py concurrent test: Fixed by changing `results: dict[str, object]` to `results: dict[str, CommandOutcome]` and removing type: ignore comments
+   - **No other errors this session** — ruff and mypy both clean before commit
+
+5. Problem Solving:
+   - Implemented atomic command transaction: `threading.Lock` wraps send+await+retry
+   - Implemented TOCTOU prevention: `asyncio.Lock` in daemon wraps read→guard→execute→wait
+   - Implemented IN_PROGRESS semantics: both result codes 0 and 5 accepted, only 5 sets `in_progress=True`
+   - Implemented link-loss detection: `--wait` polls `state.connected` each iteration; LINK_LOST → exit 4
+   - Implemented heartbeat filtering: lock onto `MAV_COMP_ID_AUTOPILOT1`, ignore others
+   - Implemented ACK source validation: only accept from locked target
+
+6. All User Messages:
+   - "继续 / compact" (multiple times, repeated attempts to continue/recompact)
+   - Earlier explicit instruction (from before compact): "Phase 2 在合并前需要完成一次并发与 ACK 语义安全修复。请新建一个 fix/command-transaction-safety 分支，基于 PR #2 修复..." with full P0/P1 spec including concurrent tests, ACK source validation, link-loss during wait, IN_PROGRESS semantics, non-autopilot heartbeat filtering, doc updates, gate verification.
+
+7. Pending Tasks:
+   - Commit the P0/P1 fixes to the `fix/command-transaction-safety` branch
+   - Push to origin (update PR #2)
+   - Run `uv run pytest -m sitl` against live SITL to verify no regression
+   - Update `docs/SITL_ACCEPTANCE_PHASE2.md` with link-loss exit 4, serialized commands, IN_PROGRESS semantics
+   - Report findings to user with file changes, concurrency model, test coverage, gate results
+   - Await user review before merging PR #2
+
+8. Current Work:
+   All code changes are complete and verified (ruff ✅, mypy strict 28 files ✅, 76 non-sitl tests pass). The work is on branch `fix/command-transaction-safety` and is NOT YET committed or pushed. Tests include:
+   - 4 new adapter tests (IN_PROGRESS, wrong-source ACK, autopilot heartbeat filtering, concurrent serialization)
+   - 6 new server tests (IN_PROGRESS accepted, IN_PROGRESS+wait continues, DENIED exit 6, wait link-loss exit 4, command lock serialization, status concurrency)
+   
+   Gate results:
+   ```
+   ruff: All checks passed!
+   mypy: Success: no issues found in 28 source files
+   pytest -m "not sitl": 76 passed, 3 deselected in 0.46s
+   ```
+   
+   SITL test NOT yet re-run this session.
+
+9. Optional Next Step:
+   The immediate next step per the user's original instruction: "完成后逐项汇报：修改的文件、并发模型、测试覆盖、门禁结果" and "不要合并 PR #2，等我 review 后再做".
+   
+   Steps:
+   1. `git add` and commit all changes
+   2. `git push origin fix/command-transaction-safety`
+   3. Run `uv run pytest -m sitl` against the live SITL to confirm no regression
+   4. Update `docs/SITL_ACCEPTANCE_PHASE2.md` with the three new sections
+   5. Present the full report to the user for review before merge
+   
+   User's exact quoted instruction: "Phase 2 在合并前需要完成一次并发与 ACK 语义安全修复。请新建一个 fix/command-transaction-safety 分支，基于 PR #2 修复，完成后更新 PR #2 或开一个依赖 PR，并完整汇报设计与测试结果。... 不要合并 PR #2，等我 review 后再做。"
+
+If you need specific details from before compaction (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/leaderone/.claude/projects/-Users-leaderone-Documents-Repos-mavctl/3c6de373-24c0-4802-97de-3129fdb09553.jsonl
+Continue the conversation from where it left off without asking the user any further questions. Resume directly — do not acknowledge the summary, do not recap what was happening, do not preface with "I'll continue" or similar. Pick up the last task as if the break never happened.
