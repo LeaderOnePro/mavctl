@@ -1,0 +1,13 @@
+再把以下最终相关改动 diff 内容完全输出即可，不必重发全部文件：
+
+git diff -- \
+  src/mavctl/daemon/guards.py \
+  src/mavctl/adapter/base.py \
+  src/mavctl/adapter/pymavlink_adapter.py \
+  src/mavctl/daemon/server.py \
+  src/mavctl/cli/app.py \
+  tests/test_guards.py \
+  tests/test_adapter.py \
+  tests/test_server.py \
+  tests/test_cli.py \
+  docs/SITL_ACCEPTANCE_PHASE2.md
