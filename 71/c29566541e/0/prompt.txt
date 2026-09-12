@@ -1,0 +1,73 @@
+Phase 2 在合并前需要完成一次并发与 ACK 语义安全修复。请新建一个
+fix/command-transaction-safety 分支，基于 PR #2 修复，完成后更新 PR #2
+或开一个依赖 PR，并完整汇报设计与测试结果。
+
+## P0：命令事务必须串行化
+
+当前 adapter 的 ACK rendezvous 仅以 MAVLink command id 为 key，而 arm 和
+disarm 共享 MAV_CMD_COMPONENT_ARM_DISARM；同时 _send_lock 只保护发送，
+不保护“发送 → 等 ACK → 重试”的完整事务。并发 CLI/RPC 请求可能让一个
+COMMAND_ACK 被错误归属给另一条命令。
+
+修复要求：
+
+1. 在 adapter 中把“发送 COMMAND_LONG + 等待对应 ACK + 必要重试”作为
+   一个不可并发的完整事务。status / telemetry 读取不应被阻塞。
+2. 在 daemon 中增加 asyncio command lock。危险命令的：
+   最新 state 获取 → guard → dry-run/idempotent 判断 → adapter 调用
+   必须串行，避免 TOCTOU。
+3. 安全优先：本阶段 --wait 也保持在该命令事务中，避免起飞/降落过程中
+   插入其他状态改变命令；status/telemetry 仍可并发。
+4. 添加并发测试，至少覆盖：
+   - 同时 arm 与 disarm；
+   - 两个同类 command；
+   - 第二条命令不能消费第一条命令的 ACK；
+   - status 在 command 正在 wait 时仍可返回。
+
+## P0：验证 COMMAND_ACK 来源
+
+_on_command_ack 只能接受来自当前 target_system + target_component
+（autopilot）的 ACK。忽略其他 MAVLink system/component 的 ACK。
+添加单元测试。
+
+## P1：--wait 中途断链
+
+--wait 循环内持续检查 state.connected。若 heartbeat 在等待期间过期，
+立即终止并返回 exit code 4（不是 exit 6 timeout），并在错误 detail 中
+说明 command 已 ACK 但等待期间链路丢失。为此使用明确的 WaitResult /
+状态模型，而不是只返回 bool。补测试。
+
+## P1：MAV_RESULT_IN_PROGRESS
+
+MAV_RESULT_IN_PROGRESS(5) 表示已接受、仍在执行，不应等同于 NACK。
+调整 CommandOutcome 的建模和 server 处理：
+- ACCEPTED 与 IN_PROGRESS 都应视为 command accepted；
+- 若指定 --wait，继续等目标状态；
+- 输出保留真实 result_name；
+- DENIED / FAILED / UNSUPPORTED 等仍返回 exit 6。
+补单元测试。
+
+## P1：过滤飞控 HEARTBEAT
+
+只允许锁定的 target autopilot heartbeat 更新 VehicleState 的
+flight_mode / armed / system_status 等飞控状态。其他 component 的 heartbeat
+不得覆盖载具快照。首次发现 MAV_COMP_ID_AUTOPILOT1 后锁定它。
+补多 component heartbeat 单测。
+
+## 文档与验收
+
+更新 SITL_ACCEPTANCE_PHASE2.md：
+- 增加“--wait 中途失链 → exit 4”的测试说明；
+- 增加“并发危险命令被安全串行化”的行为说明；
+- 明确 IN_PROGRESS 的语义。
+
+最后运行：
+uv run ruff check . &&
+uv run mypy . &&
+uv run pytest -m "not sitl"
+
+如当前 SITL 可用，也跑：
+uv run pytest -m sitl
+
+完成后逐项汇报：修改的文件、并发模型、测试覆盖、门禁结果。
+不要合并 PR #2，等我 review 后再做。
