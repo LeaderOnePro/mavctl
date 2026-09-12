@@ -1,0 +1,22 @@
+Skill v1 在提交前需要一次人工内容 review。
+
+不要修改、不要格式化、不要 commit、push、merge、rebase、tag；
+不要运行任何 mavctl 飞行控制命令。
+
+请原样完整输出以下当前工作区文件，不得使用省略号、摘要或“见文件”：
+
+1. skills/mavctl-flight/SKILL.md
+2. skills/mavctl-flight/references/workflows.md
+3. skills/mavctl-flight/references/safety.md
+4. skills/mavctl-flight/references/troubleshooting.md
+5. tests/test_skill_docs.py
+
+然后只读执行并输出：
+
+git status --short
+git diff --check
+git diff --stat origin/main...HEAD
+git diff -- origin/main...HEAD -- skills/mavctl-flight tests/test_skill_docs.py
+uv run pytest tests/test_skill_docs.py -q
+
+最后停止等待人工 review。
