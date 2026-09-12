@@ -1,0 +1,141 @@
+This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.
+
+```html
+
+Summary:
+1. Primary Request and Intent:
+   The conversation progressed through several requests about the mavctl project (headless MAVLink GCS CLI, ArduPilot-first, AI-agent-driven), culminating in an active coding task:
+   
+   - (Completed) Catch up on project status by reading the previous Claude Code session transcript, identify the user's last request, locate and read ZCode (GLM agent) conversation records, and report what happened.
+   - (Completed) Generate offline review material: first a full review package dir, then (per feedback) a single self-contained md, then (per feedback) a compact 264-line review INDEX at `~/Documents/Repos/mavctl-phase2-review.md` built from real read-only analysis with precise file:line references.
+   - (Completed) Verbatim-output six key source files in specified parts plus `git rev-parse HEAD` / `origin/main`.
+   - **(ACTIVE)** Final human safety review found ONE P0 and ONE P1. Fix them on the current branch `fix/command-transaction-safety`. Constraints (verbatim-critical): “不要 merge、不要 rebase、不要 tag”; “完成后运行门禁并等待下一轮 review”； “不要 commit / push / merge”。No state-changing mavctl commands; run gates at the end.
+   
+   **P0 — 非 force disarm 在飞行状态未知时不得放行**： Current `guards.check_disarm()` wrongly allows when connected=True, armed=True-or-None, landed_state=None, relative_alt_m=None (“遥测暂缺不能等同于‘在地面’，不应依赖飞控 NACK 作为防线”). Requirements:
+   1. Non-force disarm: armed is False → keep idempotent success; 明确 in_air 或 relative_alt_m > airborne threshold → keep reason="in_flight", exit 5; 明确 on_ground 或满足一个明确且保守的低高度地面判定 → allow; 其余未知 → reject exit 5 with NEW `reason="ground_state_unknown"`, message 明确说明“已 armed 但无法安全判断是否在地面”， hint 指导先检查 telemetry / land；--force 仅限紧急故意停桨。
+   2. --force 可越过但 checks 中必须明确标记 forced。
+   3. Guards unit tests at least: armed=True+landed_state=None+relative_alt_m=None → ground_state_unknown; armed=None+same → ground_state_unknown; landed_state=on_ground → allowed; low known relative altitude 的策略边界； in_air/高度超阈值 → in_flight; force → allowed。
+   4. 更新 SITL acceptance 文档的空中 disarm / 不确定状态说明。
+   
+   **P1 — mode map unavailable 不得伪装成可执行**： check_mode(available=[]) 记录 degraded 后放行，adapter.set_mode() 因 mapping 为空抛 ValueError → exit 1 internal error。Requirements:
+   1. mode mapping unavailable 时不要调用 adapter.set_mode;
+   2. 结构化可恢复拒绝：reason="mode_map_unavailable"、清晰 message、hint 指导等待 vehicle mode mapping / 再执行 mavctl status 后重试、不得返回 exit 1;
+   3. 选择统一退出码：vehicle control state 尚未就绪用 exit 4,安全 precondition 用 exit 5,在 docs/tests 明确语义；
+   4. 添加 guard/server/CLI（如适用）测试确保不会调用 adapter.set_mode 且输出不是 internal error;
+   5. 不要引入 MAVLink mode mapping fallback，不要扩大本轮范围。
+   
+   Completion reporting: 输出 `git diff --check`; 输出修改的文件清单； 运行 `uv run ruff check . && uv run mypy . && uv run pytest -m "not sitl"`; 如 SITL 当前可用再运行 `uv run pytest -m sitl`; 不要 commit/push/merge。
+
+2. Key Technical Concepts:
+   - Three-layer architecture: CLI (typer thin shell) → Daemon (asyncio Unix-socket NDJSON RPC) → Adapter (sole pymavlink import site)
+   - Exit-code contract: 0 success / 1 general / 2 usage / 3 daemon-down / 4 vehicle-not-connected / 5 safety-rejected / 6 NACK-timeout
+   - Dual-layer command serialization: daemon `asyncio.Lock` (_command_lock server.py:56, prevents TOCTOU, held through --wait) + adapter `threading.Lock` (:122, atomic send→await-ACK→retry); status/telemetry take neither
+   - COMMAND_ACK rendezvous: dict keyed by command id + Condition; match requires recv_monotonic >= send_ts; arm/disarm share MAV_CMD_COMPONENT_ARM_DISARM (protocol-level correlation limit)
+   - ACK quarantine/settle window (command_ack_settle_s=1.0s) drops late ACKs post-timeout
+   - Target locking: first MAV_COMP_ID_AUTOPILOT1 HEARTBEAT locks target_system/component; all snapshot updates and ACKs source-filtered thereafter
+   - WaitStatus enum (NOT_WAITED/REACHED/TIMEOUT/LINK_LOST); LINK_LOST → exit 4 with reason="link_lost_during_wait"; TIMEOUT → exit 6
+   - MAV_RESULT_IN_PROGRESS(5) treated as accepted alongside ACCEPTED(0) via `_ACCEPTED_RESULTS = frozenset({0, 5})`
+   - Guard preamble order: Gate 1 confirm (exit 5) → Gate 2 connection+heartbeat freshness ≤ max_heartbeat_age_s=3.0 (exit 4)
+   - armed tri-state None semantics: safe-side handling throughout (takeoff requires armed is True; land/rtl short-circuit only on explicit False/on_ground)
+   - Idempotent-friendly: already_satisfied decisions return exit 0
+   - Client timeout formula: wait ? timeout+30 : 25s (_client_timeout cli/app.py:47)
+   - Testing: pytest markers sitl/not-sitl, FakeAdapter doubles, ruff+mypy strict gates
+   - ZCode = Zhipu GLM-5.3 agent; records in ~/.zcode/cli/db/db.sqlite (session/message/part tables)
+   - zsh pitfall: unmatched glob aborts whole compound command
+
+3. Files and Code Sections:
+   - `src/mavctl/daemon/guards.py` (370 lines, READ FULLY — PRIMARY EDIT TARGET for P0/P1)
+     - Constants: DEFAULT_MAX_TAKEOFF_ALT_M=120.0, DEFAULT_MIN_GPS_FIX_TYPE=3, DEFAULT_AIRBORNE_ALT_THRESHOLD_M=1.0, DEFAULT_MAX_HEARTBEAT_AGE_S=3.0, _GUIDED="GUIDED"
+     - GuardConfig fields: max_takeoff_alt_m, min_gps_fix_type, airborne_alt_threshold_m, max_heartbeat_age_s
+     - `_preamble` (:90): Gate 1 confirm→exit 5; Gate 2 fresh = connected and age <= max_heartbeat_age_s → exit 4 VEHICLE_NOT_CONNECTED
+     - `check_disarm` (:187-228) CURRENT BUGGY LOGIC:
+       ```python
+       if state.armed is False:  # idempotent already-disarmed
+           return GuardDecision(..., already_satisfied=True, note="already disarmed")
+       airborne = state.landed_state == "in_air" or (
+           state.relative_alt_m is not None
+           and state.relative_alt_m > config.airborne_alt_threshold_m
+       )
+       if airborne and not force:
+           return _reject(..., reason="in_flight", ...)
+       checks.append(_passed("on_ground", "forced" if force else f"landed_state={state.landed_state}"))
+       return GuardDecision(allowed=True, action=action, checks=checks)
+       ```
+       ← falls through to ALLOW when armed=True/None and landed_state=None and relative_alt_m=None (the P0 bug)
+     - `check_mode` (:231-270) CURRENT degraded-pass (P1 bug):
+       ```python
+       if not available:
+           checks.append(_passed("mode_known", "mode list unavailable, validation skipped (degraded)"))
+       elif target not in available:
+           return _reject(..., reason="unknown_mode", exit_code=ExitCode.USAGE_ERROR)
+       ```
+   - `src/mavctl/daemon/server.py` (439 lines, READ FULLY)
+     - `_m_mode` (:187): calls guards.check_mode(state, mode, self._adapter.mode_names(), ...) then `_pre_execute`; ValueError from set_mode escapes `_blocking` (catches only AdapterError) → `_dispatch` catch-all → exit 1 internal error (P1 mechanism confirmed)
+     - `_pre_execute` (:277): dry-run terminal / reject / already_satisfied exits
+     - `_blocking` (:320): executor wrapper catching AdapterError only
+     - `_command_result` (:327): not accepted → exit 6
+     - `_maybe_wait` (:352)/`_finish_wait` (:377): WaitStatus mapping
+   - `src/mavctl/adapter/pymavlink_adapter.py` (581 lines, READ FULLY)
+     - `set_mode` (:258) raises `ValueError(f"unknown flight mode {mode!r}; ...")` when mapping empty — root of P1 exit-1 path
+     - `_send_command` (:280) transaction; `_await_ack` (:350); `_on_command_ack` (:533); `_on_heartbeat` (:411)
+   - `tests/test_guards.py` (274 lines, READ FULLY — EDIT TARGET)
+     - `_state(**kw)` helper base: connected=True, heartbeat_age_s=0.2, flight_mode="GUIDED", armed=False, gps fix_type=6
+     - `test_disarm_unknown_armed_is_not_idempotent` (:149): armed=None + relative_alt_m=0.0 → asserts allowed=True (will STILL PASS under planned design since 0.0 ≤ 0.5 ceiling, but comment must update)
+     - `test_disarm_airborne_threshold_is_configurable` (:158): cfg airborne=5.0; below alt=3.0 expects allowed → **WILL FAIL under new band logic (3.0 ∈ (0.5,5.0] unknown) → MUST REWRITE**
+     - `test_mode_empty_available_is_degraded_not_silent` (:192): expects allowed=True + "degraded" detail → **MUST REWRITE to expect mode_map_unavailable rejection**
+   - `docs/SITL_ACCEPTANCE_PHASE2.md` (291 lines, READ FULLY — EDIT TARGET)
+     - §1 note (:38-40): ArduCopter 常不发 EXTENDED_SYS_STATE,landed_state 常 n/a — explains why unknown-state disarm matters on real SITL
+     - §7 note (:139-143): OLD language “takeoff 后约 1 秒过渡窗口内护栏会放行，转由飞控自身 NACK 拦截” — exactly the behavior P0 removes; must rewrite
+     - §9 exit-code table (:261-271) may need semantic note
+   - `tests/test_server.py` (READ lines 1-146 — needed for new P1 test)
+     - `FakeAdapter`: has `self.calls: list[str]` tracking; `mode_names()` returns ["GUIDED","LOITER","RTL","LAND","STABILIZE"]; `set_mode` appends call + mutates state
+     - Helpers: `_state(connected=True, *, armed=False, mode="GUIDED")` sets relative_alt_m=0.0, gps fix_type=6; `_server(...)`; `_params(**kw)` → wire.encode({"method":..., "params":...})
+   - `src/mavctl/models/protocol.py` (READ): ExitCode IntEnum SUCCESS=0…NACK_TIMEOUT=6; DaemonResponse.success/failure
+   - `src/mavctl/models/state.py`, `commands.py`, `wire.py`, `base.py`, `process.py`, `client.py`, `paths.py`, `cli/app.py` — all read fully; details embedded in review index
+   - Memory files written: `~/.claude/projects/-Users-leaderone-Documents-Repos-mavctl/memory/zcode-session-records.md` + MEMORY.md index line
+   - Deliverables written: `~/Documents/Repos/mavctl-phase2-review.md` (264 lines/22KB review index, current version)
+
+4. Errors and fixes:
+   - **zsh glob abort** (`ls -d ~/.zcode* ~/.z-ai* ...` → "no matches found: /Users/leaderone/.z-ai*" killed entire command including ~/.zcode check): user mid-turn corrected “有 .zcode/ 目录的，你去看看，大概率在这”； fixed by directly listing ~/.zcode/
+   - **First SITL run 1 failed** (`test_link_reports_connected_and_telemetry`, assert lat_deg is not None): solo rerun PASSED; diagnosed as test warm-up flake — test awaits only heartbeat via `_await_connected()` then immediately asserts position, ignoring existing `_await_gps_fix()` ("heartbeat can arrive before GPS_RAW_INT"); same-run full-flight-flow passed; documented honestly as test defect, not product regression
+   - **PIPESTATUS empty in zsh** (used bash `${PIPESTATUS[0]}`): switched to zsh `${pipestatus[1]}` later; otherwise relied on pass-summary lines
+   - **User format feedback twice**: rejected whole review-package dir (“不要生成一整个审查包”) → single file; then rejected 240KB size (“那个文件实在太长了”) → compact index. Old package dir deleted on my initiative after single-file request.
+
+5. Problem Solving:
+   - Reconstructed complete cross-tool history (Claude Code + ZCode sessions) and verified against live git/gh state
+   - Built precise architectural map with file:line refs for all six dangerous commands, exit-code origins, lock topology (documented in ~/Documents/Repos/mavctl-phase2-review.md)
+   - Identified gaps during analysis: EKF check entirely unimplemented (original spec deviation), HOME_POSITION/EXTENDED_SYS_STATE handlers untested (landed_state feeds disarm airborne detection), wait-timeout only indirectly covered
+   - Designed P0 fix: add `DEFAULT_MAX_ON_GROUND_ALT_M = 0.5` + `GuardConfig.max_on_ground_alt_m`; new check order: (1) armed is False → idempotent; (2) explicit-air = landed_state=="in_air" OR alt > airborne_alt_threshold_m → in_flight reject [air checked BEFORE on_ground so contradictory data rejects safely]; (3) landed_state=="on_ground" → allow; (4) alt known AND alt <= max_on_ground_alt_m → allow (conservative low-alt ground determination); (5) else → ground_state_unknown reject exit 5. Force → early return allowed with `_passed("on_ground", "forced")` marking. landed_state "takeoff"/"landing" fall into unknown-band rules (not explicit either way)
+   - Decided P1 exit code: **exit 5 (SAFETY_REJECTED)** — rationale: every other exit-4 trigger means "no live vehicle state" (heartbeat-based); mode-map-missing while heartbeats flow would pollute that semantic; retryability conveyed via reason/hint; document in guards comments + acceptance doc + tests
+   - Identified all test fallout: test_guards.py:149 (comment update), :158 (rewrite to band semantics), :192 (rewrite to rejection)
+
+6. All user messages:
+   - “你好”
+   - “你先读取一下上一个 session 中的对话记录，了解一下这个项目的开发现状”
+   - “我上一个 session 最后的要求是什么？”
+   - “ZCode 的对话记录具体位置我也不清楚，需要你主动去找一下”
+   - “有 .zcode/ 目录的，你去看看，大概率在这” (mid-turn)
+   - “直接把完整 diff + 文件写成本地文件给你 review，不用刷屏”
+   - “不要生成一整个审查包，直接生成单个文本文件或大段文字，也方便我贴给聊架构设计的 AI Chatbot 来审核”
+   - “那个文件实在太长了，优化一下，为一次最终 Phase 2 review 建立审查索引。严格要求：只读分析；不修改任何文件；不运行会改变飞控状态的 mavctl 命令；不 commit、push、merge、rebase、tag；可以运行 git、ruff、mypy、pytest 等只读/测试命令；如 SITL 未运行，不要自行启动它。” (+ detailed 6-section spec: git/release status with named commands; phase status table covering Phase 1/Phase 2 基础飞控/Phase 2 transaction safety/Agent Skill/PyPI 发布准备/Phase 3 mission protocol; ASCII architecture + per-command call chains with mandatory annotations; P0/P1/P2 file risk list; test inventory + coverage matrix + uncovered scenarios without modifying tests; review recommendations with 6-10 priority files, functions, merge advice)
+   - “不要修改文件，不要 commit、push、merge、rebase、tag，不要执行任何 mavctl 状态变更命令。请原样输出当前 fix/command-transaction-safety 分支上的以下文件内容，不得使用省略号、摘要、”见工作区“或伪代码；若输出过长，请按 Part 1 / Part 2 连续输出，确保函数不被截断：1. guards.py 2. commands.py 3. state.py 4. base.py 5. server.py（两段）6. pymavlink_adapter.py（三段）最后只输出当前 HEAD 和 origin/main 的 commit SHA”
+   - **(CURRENT)** “最终安全 review 发现一个 P0 和一个 P1。请在当前 fix/command-transaction-safety 分支修复；不要 merge、不要 rebase、不要 tag。完成后运行门禁并等待下一轮 review。” + full P0 spec (ground_state_unknown reason/message/hint wording requirements, forced marking, 6 required test cases, SITL doc update) + full P1 spec (no set_mode call when mapping unavailable, mode_map_unavailable structured rejection, choose exit 4 or 5 with documented semantics, guard/server/CLI tests, no fallback/no scope expansion) + completion checklist: 输出 git diff --check; 输出修改的文件清单； 运行 uv run ruff check . && uv run mypy . && uv run pytest -m "not sitl"; 如 SITL 当前可用再运行 uv run pytest -m sitl; 不要 commit / push / merge。
+
+7. Pending Tasks:
+   - Implement P0 fix in `src/mavctl/daemon/guards.py`: new constant + `GuardConfig.max_on_ground_alt_m` (planned default 0.5), rewrite `check_disarm` ground/air/unknown logic with ground_state_unknown branch, forced early-return marking, module docstring update
+   - Implement P1 fix in `check_mode`: replace degraded-pass with `_reject(reason="mode_map_unavailable", exit_code=ExitCode.SAFETY_REJECTED)` (chosen; document semantics)
+   - Update `tests/test_guards.py`: rewrite :149 comment, REWRITE :158 (band semantics), REWRITE :192 (expect rejection), add required new cases (armed=True all-None → ground_state_unknown; armed=None all-None → ground_state_unknown; on_ground → allowed; low-alt boundary: ≤ceiling allowed / just-above-ceiling unknown / >air-threshold in_flight; in_air → in_flight; force → allowed with forced marked)
+   - Add server test in `tests/test_server.py`: adapter with empty mode_names + set_mode spy → dispatch mode → assert ok=False, error.code==SAFETY_REJECTED(5), reason=="mode_map_unavailable", set_mode NOT called, not internal error
+   - Optionally add CLI test in `tests/test_cli.py` (daemon failure passthrough → exit 5 + hint)
+   - Update `docs/SITL_ACCEPTANCE_PHASE2.md`: rewrite §7 空中 disarm 说明 (remove transition-window/NACK-backstop language; add ground_state_unknown semantics + conservative low-alt rule), document mode_map_unavailable exit-5 semantics, possibly §1 note and §9 table
+   - Run completion evidence: `git diff --check`; changed-files list; `uv run ruff check . && uv run mypy . && uv run pytest -m "not sitl"`; `uv run pytest -m sitl` (SITL was running as of last check); do NOT commit/push/merge; await next review round
+
+8. Current Work:
+   Immediately before this summary I was in the information-gathering phase of the P0/P1 fix task. Completed so far: (a) analyzed current buggy `check_disarm` (:187-228) and `check_mode` (:231-270) code paths and confirmed the P1 exit-1 mechanism (`ValueError` from adapter.set_mode escapes `_blocking`'s AdapterError-only catch → `_dispatch` catch-all → exit 1); (b) read `tests/test_guards.py` fully and identified exactly which existing tests break or need updating (:149 comment-only, :158 must rewrite — cfg airborne=5.0/alt=3.0 currently expects allowed but will land in unknown band, :192 must rewrite to expect mode_map_unavailable rejection); (c) read `docs/SITL_ACCEPTANCE_PHASE2.md` fully and located the §7 note (:139-143) containing the now-invalidated "过渡窗口放行 + 飞控 NACK 兜底” explanation plus §1 landed_state-n/a note; (d) read `tests/test_server.py` lines 1-146 to learn FakeAdapter (calls-list spying, fixed mode_names) and helpers (_state defaults relative_alt_m=0.0; _params builds wire frames) for writing the new P1 server test. No file has been edited yet for this task; working tree is clean; HEAD=fe7fcc0a753a6659c0f88876d627f0a03b182291.
+
+9. Optional Next Step:
+   Begin implementing the fixes, starting with editing `src/mavctl/daemon/guards.py` (the design is settled): add `DEFAULT_MAX_ON_GROUND_ALT_M` + `GuardConfig.max_on_ground_alt_m`, rewrite `check_disarm` per the ordered policy ((1) armed False → idempotent; (2) explicit-air → in_flight exit 5; (3) landed_state=="on_ground" → allow; (4) known alt ≤ max_on_ground_alt_m → allow; (5) else → `_reject(reason="ground_state_unknown", exit_code=SAFETY_REJECTED)` with message stating armed-but-cannot-determine-ground and hint pointing to telemetry/status + land, --force 仅限紧急故意停桨； force → allowed with "forced"-marked check), and replace `check_mode`'s degraded-pass with the `mode_map_unavailable` exit-5 rejection. Then proceed to the test edits (test_guards.py :149/:158/:192 + new cases; test_server.py new no-set_mode-called test; optional test_cli.py), doc updates, then the mandated evidence run: “输出 git diff --check；输出修改的文件清单；运行：uv run ruff check . && uv run mypy . && uv run pytest -m "not sitl"；如 SITL 当前可用，再运行 uv run pytest -m sitl；不要 commit / push / merge。" This directly continues the user's latest instruction: “请在当前 fix/command-transaction-safety 分支修复…完成后运行门禁并等待下一轮 review。"
+```
+
+If you need specific details from before compaction (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/leaderone/.claude/projects/-Users-leaderone-Documents-Repos-mavctl/dcee25fd-055c-4bcd-b198-becce55152e5.jsonl
+Continue the conversation from where it left off without asking the user any further questions. Resume directly — do not acknowledge the summary, do not recap what was happening, do not preface with "I'll continue" or similar. Pick up the last task as if the break never happened.
