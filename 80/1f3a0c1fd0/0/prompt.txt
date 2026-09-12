@@ -1,0 +1,64 @@
+bPhase 2 final review 已通过。现在只执行第一步：合并 PR #2。
+
+严格要求：
+- 只合并 PR #2；
+- 不处理 PR #3；
+- 不 rebase fix/command-transaction-safety；
+- 不打 tag；
+- 不删除 fix/command-transaction-safety；
+- 不开始 Skill、PyPI 或 Phase 3；
+- 操作完成后停止并汇报。
+
+## 合并前最终核对
+
+执行：
+
+git fetch origin --prune
+git status --short
+git switch main
+git pull --ff-only origin main
+
+确认：
+- 工作树 clean；
+- PR #2 仍是 main <- feat/flight-control；
+- PR #2 可 merge；
+- PR #2 的测试状态仍为通过。
+
+## 合并
+
+使用 GitHub squash merge 合并 PR #2：
+
+feat/flight-control → main
+
+保持仓库 squash merge 约定，不要使用 merge commit。
+
+建议 squash commit message：
+
+feat(flight): add guarded MAVLink flight control commands
+
+合并后：
+
+1. 拉取 main：
+   git switch main
+   git pull --ff-only origin main
+
+2. 确认 main 中存在 Phase 2 基础功能：
+   - guards.py
+   - arm/disarm/mode/takeoff/land/rtl
+   - Phase 2 基础测试
+   - docs/SITL_ACCEPTANCE_PHASE2.md
+
+3. 不要 merge PR #3。
+4. 不要修改 fix/command-transaction-safety 分支。
+5. 不要打 tag。
+
+最后仅汇报：
+
+- PR #2 merge commit SHA；
+- main 当前 HEAD SHA；
+- PR #2 状态；
+- PR #3 当前状态、base branch、head branch；
+- git log --graph --oneline --decorate -20；
+- git status --short。
+
+停止等待下一步指令。
