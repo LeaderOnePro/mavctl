@@ -1,0 +1,102 @@
+mavctl 0.2.0 已正式发布到 PyPI，tag v0.2.0 已存在且指向 d334067。
+现在仅创建 GitHub Release 页面，不修改仓库代码或 Git history。
+
+严格限制：
+- 不创建或推送任何 tag；
+- 不修改 main、任何分支、文件、workflow 或 package version；
+- 不发布 PyPI；
+- 不执行 SITL 或飞行控制命令；
+- 不开始 Phase 3；
+- 不删除任何 release、tag 或分支。
+
+## 1. 发布前核对
+
+执行：
+
+git fetch origin --prune
+git switch main
+git status --short
+git show v0.2.0 --stat
+gh release view v0.2.0 --repo LeaderOnePro/mavctl
+
+若 GitHub Release 已经存在，停止并汇报，不要覆盖或编辑。
+
+确认：
+
+- git status clean；
+- tag v0.2.0 存在；
+- tag 指向 release commit d334067；
+- GitHub Release 页面尚不存在。
+
+## 2. 创建 GitHub Release
+
+使用 GitHub CLI 创建一个非 prerelease、非 draft 的 release：
+
+```bash
+gh release create v0.2.0 \
+  --repo LeaderOnePro/mavctl \
+  --title "mavctl 0.2.0 — Guarded flight control for AI agents" \
+  --notes-file <temporary-notes-file>
+不要上传 build artifacts；PyPI 是安装来源。
+
+Release notes 内容使用以下 Markdown：
+
+mavctl 0.2.0
+First public release of mavctl: a headless, agent-first MAVLink
+ground-control CLI for ArduPilot-first workflows.
+
+Highlights
+Persistent daemon that owns the MAVLink connection and caches vehicle state.
+Structured CLI for status, telemetry, arm, disarm, mode,
+takeoff, land, and rtl.
+Agent-friendly JSON output, stable exit-code contract, structured guard
+reasons and hints.
+Safety controls: --confirm, --dry-run, --wait, idempotent commands,
+takeoff altitude limits, and positive ground evidence for ordinary disarm.
+No force-arm path. disarm --force is emergency motor stop only.
+MAVLink transaction safety: serialized dangerous commands, ACK source
+validation, target locking, late-ACK quarantine, and link-loss awareness.
+Included portable Agent Skill v1 under skills/mavctl-flight/.
+Install
+Bash
+
+uv tool install mavctl
+
+# or run once:
+uvx mavctl --help
+
+# or:
+pipx install mavctl
+Quickstart
+Start with ArduPilot SITL, then:
+
+Bash
+
+mavctl daemon start --connect udp:127.0.0.1:14550
+mavctl status --json
+See the README and
+SITL acceptance guide.
+
+Safety
+This release is validated against ArduPilot SITL. It is not presented as
+production-ready software for real aircraft. Validate workflows in simulation
+before any real-vehicle use.
+
+Verification
+178 non-SITL tests
+3 ArduPilot SITL integration tests
+Published to PyPI through GitHub Actions OIDC Trusted Publishing
+3. 验证
+创建后执行：
+
+gh release view v0.2.0 --repo LeaderOnePro/mavctl
+git status --short
+
+最后仅汇报：
+
+GitHub Release URL；
+release title；
+tag；
+是否 draft/prerelease；
+git status；
+明确确认：没有任何代码、tag、PyPI 或 flight-control 操作。
