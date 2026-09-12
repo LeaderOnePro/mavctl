@@ -1,0 +1,13 @@
+guards.py review 通过，架构保持不变，合并前修复以下问题：
+
+1.（必须）新增共享的连接检查门：在 _confirm_check 之后、各命令
+   前置检查之前，检查 state 的连接与心跳新鲜度。断链或心跳过期时
+   拒绝，reason="not_connected"，exit_code=NOT_CONNECTED(4)。
+   如 VehicleState 缺少心跳年龄字段则补充，并让 status 输出该字段。
+2.（必须）check_disarm 的空中判定阈值 1.0m 移入 GuardConfig
+   （airborne_alt_threshold_m）。
+3.（应该）armed 为 None（未知）时的处理：在各 guard 中加注释明确
+   意图，确保始终偏向安全侧。
+4.（应该）check_mode 在 available 为空时，在 checks 中记录
+   "mode list unavailable, validation skipped (degraded)" 而非静默通过。
+5. 为以上修改补充单元测试（尤其断链拒绝和 armed=None 路径）。
