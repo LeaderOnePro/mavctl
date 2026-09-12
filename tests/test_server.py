@@ -7,6 +7,7 @@ import threading
 
 import pytest
 
+from mavctl.adapter.base import ModeMappingUnavailableError
 from mavctl.daemon import wire
 from mavctl.daemon.server import DaemonServer
 from mavctl.models import (
@@ -346,6 +347,51 @@ async def test_mode_map_unavailable_rejected_not_internal_error() -> None:
     assert response.error.detail["hint"]
     assert "internal" not in (response.error.message or "").lower()
     assert adapter.calls == []  # set_mode was never reached
+
+
+class _VanishingModeMapAdapter(FakeAdapter):
+    """mode_names() is populated at guard time, but the mapping disappears
+    before set_mode runs — the B3 TOCTOU window."""
+
+    def set_mode(self, mode: str) -> CommandOutcome:
+        self.calls.append(f"set_mode({mode})")
+        raise ModeMappingUnavailableError("mode mapping unavailable or changed")
+
+
+async def test_mode_toctou_returns_structured_rejection_not_internal_error() -> None:
+    adapter = _VanishingModeMapAdapter(_state(mode="STABILIZE"))
+    server = DaemonServer(adapter, "udp:127.0.0.1:14550")
+    response = await server._dispatch(_params(method="mode", mode="LOITER", confirm=True))
+
+    assert response.ok is False
+    assert response.error is not None
+    # Structured, recoverable safety rejection (exit 5) — never exit 1.
+    assert response.error.code == ExitCode.SAFETY_REJECTED
+    assert response.error.detail["reason"] == "mode_map_unavailable"
+    assert response.error.detail["hint"]
+    assert "internal" not in (response.error.message or "").lower()
+    # set_mode ran (guard passed), but the failure is structured.
+    assert adapter.calls == ["set_mode(LOITER)"]
+
+
+class _ExplodingModeAdapter(FakeAdapter):
+    """An unexpected ValueError must keep flowing to the generic handler:
+    the B3 fix must not blanket-catch ValueError."""
+
+    def set_mode(self, mode: str) -> CommandOutcome:
+        self.calls.append(f"set_mode({mode})")
+        raise ValueError("boom: unexpected adapter bug")
+
+
+async def test_unexpected_value_error_still_internal_error() -> None:
+    adapter = _ExplodingModeAdapter(_state(mode="STABILIZE"))
+    server = DaemonServer(adapter, "udp:127.0.0.1:14550")
+    response = await server._dispatch(_params(method="mode", mode="LOITER", confirm=True))
+
+    assert response.ok is False
+    assert response.error is not None
+    assert response.error.code == ExitCode.GENERAL_ERROR
+    assert "internal error" in (response.error.message or "")
 
 
 async def test_mode_idempotent_noop_even_with_empty_mode_map() -> None:

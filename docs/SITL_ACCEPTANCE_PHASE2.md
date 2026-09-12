@@ -342,6 +342,25 @@ uv run mavctl status
 uv run mavctl daemon stop
 ```
 
+## 8f. --heartbeat-timeout 与 guard 一致性
+
+`daemon start --heartbeat-timeout N` 的 N 是单一事实源：它同时决定 adapter
+的 `connected` 判定与 guard 的 heartbeat freshness 判定（N 必须 finite 且
+> 0；CLI 与 daemon entrypoint 都会拒绝 0、负数、NaN、Infinity）。手动验收：
+
+```bash
+uv run mavctl daemon start --connect udp:127.0.0.1:14550 --heartbeat-timeout 5
+# 停止 SITL，让心跳停止；在最后一次心跳后约 4 秒（>3 旧默认、<5）：
+uv run mavctl status              # 期望：CONNECTED，heartbeat 4s 左右
+uv run mavctl rtl --confirm --dry-run
+# 期望：dry-run 跑完 guard（如 already_home / on_ground 判定），
+#       而不是 not_connected / exit 4 —— 证明 guard 没有用旧默认 3s
+# 在心跳停止 5 秒之后：
+uv run mavctl status              # 期望：DISCONNECTED
+uv run mavctl rtl --confirm --dry-run   # 期望：exit 4 / not_connected
+uv run mavctl daemon stop
+```
+
 ## 9. 退出码总表
 
 | 退出码 | 含义 |

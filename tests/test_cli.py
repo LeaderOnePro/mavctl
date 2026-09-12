@@ -117,6 +117,58 @@ def test_daemon_start_already_running(monkeypatch: pytest.MonkeyPatch) -> None:
     assert json.loads(result.stdout) == {"status": "already_running", "pid": 4242}
 
 
+@pytest.mark.parametrize("bad", ["0", "-1", "nan", "inf"])
+def test_daemon_start_rejects_invalid_heartbeat_timeout_even_when_running(
+    monkeypatch: pytest.MonkeyPatch, bad: str
+) -> None:
+    """Validation precedes the already-running no-op: a running daemon must
+    never turn an invalid --heartbeat-timeout into a success."""
+
+    def no_spawn(*_args: object, **_kwargs: object) -> int:
+        raise AssertionError("process.spawn must not be called for an invalid timeout")
+
+    monkeypatch.setattr(process, "is_running", lambda: True)
+    monkeypatch.setattr(process, "spawn", no_spawn)
+    result = runner.invoke(
+        app, ["daemon", "start", "--connect", "udp:x", "--heartbeat-timeout", bad, "--json"]
+    )
+
+    assert result.exit_code == ExitCode.USAGE_ERROR
+
+
+def test_daemon_start_valid_timeout_when_running_still_already_running(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(process, "is_running", lambda: True)
+    monkeypatch.setattr(process, "read_pid", lambda: 4242)
+
+    def no_spawn(*_args: object, **_kwargs: object) -> int:
+        raise AssertionError("spawn must not run when the daemon is already up")
+
+    monkeypatch.setattr(process, "spawn", no_spawn)
+    result = runner.invoke(app, ["daemon", "start", "--connect", "udp:x", "--json"])
+
+    assert result.exit_code == ExitCode.SUCCESS
+    assert json.loads(result.stdout) == {"status": "already_running", "pid": 4242}
+
+
+@pytest.mark.parametrize("bad", ["0", "-1", "nan", "inf"])
+def test_daemon_start_rejects_invalid_heartbeat_timeout(
+    monkeypatch: pytest.MonkeyPatch, bad: str
+) -> None:
+    """0 / negative / NaN / Infinity exit 2 before anything is spawned."""
+
+    def no_spawn(*_args: object, **_kwargs: object) -> int:
+        raise AssertionError("process.spawn must not be called for an invalid timeout")
+
+    monkeypatch.setattr("mavctl.daemon.process.spawn", no_spawn)
+    result = runner.invoke(
+        app, ["daemon", "start", "--connect", "udp:x", "--heartbeat-timeout", bad, "--json"]
+    )
+
+    assert result.exit_code == ExitCode.USAGE_ERROR
+
+
 def test_daemon_start_spawns(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(process, "is_running", lambda: False)
     monkeypatch.setattr(process, "spawn", lambda connect, heartbeat_timeout: 999)

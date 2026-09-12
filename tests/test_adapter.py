@@ -2,14 +2,19 @@
 
 from __future__ import annotations
 
+import io
 import threading
 import time
+from typing import Any
 
 import pytest
 from pymavlink import mavutil
 
+from mavctl.adapter.base import ModeMappingUnavailableError
 from mavctl.adapter.pymavlink_adapter import PymavlinkAdapter
-from mavctl.models import CommandOutcome
+from mavctl.daemon import guards
+from mavctl.daemon.guards import GuardConfig
+from mavctl.models import CommandOutcome, ExitCode
 from tests.fakes import FakeMaster, FakeMsg
 
 # MAV_MODE_FLAG_SAFETY_ARMED bit.
@@ -86,6 +91,83 @@ def test_sys_status_handles_unknown_sentinels() -> None:
     assert battery.voltage_v is None
     assert battery.current_a is None
     assert battery.remaining_pct is None
+
+
+def _wire_sys_status(battery_remaining: int) -> Any:
+    """Build a real pymavlink SYS_STATUS message through the wire encoder
+    and parser, so signed-field semantics match the transport exactly."""
+
+    buf = io.BytesIO()
+    mav = mavutil.mavlink.MAVLink(buf, srcSystem=1, srcComponent=1)
+    mav.sys_status_send(0, 0, 0, 0, 12600, 1000, battery_remaining, 0, 0, 0, 0, 0, 0)
+    buf.seek(0)
+    parser = mavutil.mavlink.MAVLink(None)
+    parsed = parser.parse_buffer(buf.getvalue())
+    msg = next(m for m in parsed if m.get_type() == "SYS_STATUS")
+    return msg
+
+
+def test_wire_battery_remaining_sentinel_is_signed_negative_one() -> None:
+    """Authoritative check (B1): SYS_STATUS.battery_remaining is int8_t with
+    unknown sentinel -1. On the wire the unknown byte is 0xFF, but pymavlink
+    parses int8_t signed, so the adapter must treat -1 (never 255) as
+    unknown. No unit conversion applies: the field is already percent."""
+
+    msg = _wire_sys_status(-1)
+    assert msg.battery_remaining == -1  # signed parse, not 255
+
+    adapter = PymavlinkAdapter("udp:127.0.0.1:14550")
+    _lock_autopilot(adapter)
+    adapter._on_sys_status(msg)
+    assert adapter.get_state().battery.remaining_pct is None
+
+
+@pytest.mark.parametrize("pct", [0, 42, 100])
+def test_wire_battery_remaining_valid_percentages_kept(pct: int) -> None:
+    msg = _wire_sys_status(pct)
+    assert msg.battery_remaining == pct
+
+    adapter = PymavlinkAdapter("udp:127.0.0.1:14550")
+    _lock_autopilot(adapter)
+    adapter._on_sys_status(msg)
+    assert adapter.get_state().battery.remaining_pct == pct
+
+
+def test_heartbeat_timeout_is_the_single_source_for_adapter_and_guard(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """B2: one effective heartbeat timeout (5 s here) must drive BOTH the
+    adapter's ``connected`` computation and the guard preamble, so a custom
+    ``--heartbeat-timeout`` never lets status say CONNECTED while a guard
+    rejects the same state as stale (or vice versa)."""
+
+    clock = _FakeMonotonicClock()
+    _freeze_clock(monkeypatch, clock)
+    timeout = 5.0
+    config = GuardConfig(max_heartbeat_age_s=timeout)  # same source value
+
+    adapter = PymavlinkAdapter("udp:127.0.0.1:14550", heartbeat_timeout_s=timeout)
+    adapter._master = FakeMaster(flightmode="GUIDED")
+    adapter._on_heartbeat(_hb(1, 1, armed=True, custom_mode=4, system_status=4))
+
+    # Inside the window (4 s < 5 s): connected, and the guard must NOT
+    # reject for a stale heartbeat even though the old default (3 s) would.
+    clock.advance(4.0)
+    state = adapter.get_state()
+    assert state.connected is True
+    decision = guards.check_arm(state, confirm=True, config=config)
+    assert decision.reason != "not_connected"
+    assert decision.exit_code != ExitCode.VEHICLE_NOT_CONNECTED
+
+    # Just past the window (5.1 s > 5 s): disconnected AND the guard
+    # rejects with not_connected / exit 4 — the two sides still agree.
+    clock.advance(1.1)
+    state = adapter.get_state()
+    assert state.connected is False
+    decision = guards.check_arm(state, confirm=True, config=config)
+    assert decision.allowed is False
+    assert decision.reason == "not_connected"
+    assert decision.exit_code == ExitCode.VEHICLE_NOT_CONNECTED
 
 
 def test_global_position_populates_position_and_velocity() -> None:
@@ -298,10 +380,30 @@ def test_set_mode_resolves_custom_number() -> None:
     assert params[1] == 4.0  # GUIDED custom mode number from the fake mode map
 
 
-def test_set_mode_unknown_raises() -> None:
+def test_set_mode_unresolvable_raises_typed_mapping_error() -> None:
+    # User-input unknown modes are rejected by the guard (exit 2). Reaching
+    # set_mode with an unresolvable target means the mapping vanished or
+    # changed after validation — a transient vehicle state, reported as the
+    # typed adapter error, never a plain ValueError (which the daemon would
+    # turn into an internal error).
     adapter, _master = _cmd_adapter()
-    with pytest.raises(ValueError, match="unknown flight mode"):
+    with pytest.raises(ModeMappingUnavailableError, match="cannot be resolved"):
         adapter.set_mode("NOPE")
+
+
+def test_mode_mapping_toctou_sends_nothing() -> None:
+    """guard sees a valid mode -> mapping disappears before set_mode:
+    typed error, no COMMAND_LONG on the wire."""
+
+    adapter, master = _cmd_adapter()
+    _wire_acks(adapter, master, [0])
+    assert adapter.mode_names()  # guard-time view: mapping is populated
+
+    master._modes = {}  # mapping vanishes between validation and send
+
+    with pytest.raises(ModeMappingUnavailableError, match="unavailable or changed"):
+        adapter.set_mode("GUIDED")
+    assert master.sent == []  # nothing reached the wire
 
 
 def test_takeoff_sends_target_altitude() -> None:

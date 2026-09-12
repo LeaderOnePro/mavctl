@@ -86,6 +86,17 @@ def _check_timeout(timeout: float, *, json_mode: bool) -> None:
         fail(ExitCode.USAGE_ERROR, "--timeout must be finite and > 0", json_mode=json_mode)
 
 
+def _check_heartbeat_timeout(timeout: float, *, json_mode: bool) -> None:
+    """Early CLI-side range check; the daemon entrypoint re-validates."""
+
+    if not (math.isfinite(timeout) and timeout > 0):
+        fail(
+            ExitCode.USAGE_ERROR,
+            "--heartbeat-timeout must be finite and > 0",
+            json_mode=json_mode,
+        )
+
+
 def _call(
     method: str,
     json_mode: bool,
@@ -127,6 +138,11 @@ def daemon_start(
     json_mode: JsonOption = False,
 ) -> None:
     """Start the background daemon and connect to the vehicle."""
+
+    # Validate arguments before any daemon state is consulted: a running
+    # daemon must never turn an invalid --heartbeat-timeout into an
+    # already-running success.
+    _check_heartbeat_timeout(heartbeat_timeout, json_mode=json_mode)
 
     if process.is_running():
         pid = process.read_pid()

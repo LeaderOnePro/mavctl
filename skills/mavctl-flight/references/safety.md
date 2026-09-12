@@ -104,7 +104,9 @@ physical state has changed yet:
 ## Link-loss behaviour
 
 If the heartbeat expires mid-`--wait` (default threshold 3 s, settable via
-`daemon start --heartbeat-timeout`), the daemon stops waiting immediately and
+`daemon start --heartbeat-timeout`; the same value drives both the
+`connected` status and the guards' heartbeat-freshness check and must be
+finite and positive), the daemon stops waiting immediately and
 returns exit 4 with reason `link_lost_during_wait` plus the already-received
 ACK in the detail — the command side succeeded, the observation side did not.
 After the link returns, the daemon reconnects on its own; re-poll `status`.

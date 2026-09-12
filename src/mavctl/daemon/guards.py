@@ -56,6 +56,17 @@ class GuardConfig(BaseModel):
             raise ValueError("max_ground_evidence_age_s must be finite and >= 0")
         return value
 
+    @field_validator("max_heartbeat_age_s")
+    @classmethod
+    def _heartbeat_age_finite_positive(cls, value: float) -> float:
+        # One effective heartbeat timeout drives both the adapter's
+        # ``connected`` computation and the guards' freshness gate; it must
+        # be a usable duration. Zero, negative, NaN and Infinity are all
+        # rejected at this single validation point.
+        if not math.isfinite(value) or value <= 0:
+            raise ValueError("max_heartbeat_age_s must be finite and > 0")
+        return value
+
 
 class GuardCheck(BaseModel):
     """One named precondition check and its result."""

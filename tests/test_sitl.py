@@ -40,6 +40,26 @@ def _await_connected(timeout: float = 15.0) -> dict[str, object]:
     return state
 
 
+def _await_position_telemetry(timeout: float = 15.0) -> DaemonResponse:
+    """Wait until telemetry reports a position.
+
+    GLOBAL_POSITION_INT can arrive after the first heartbeat, so a connected
+    status does not prove the telemetry snapshot is populated. Returns the
+    last response (ok or not) so failure assertions stay diagnosable.
+    """
+
+    deadline = time.monotonic() + timeout
+    telemetry = call_daemon("telemetry")
+    while time.monotonic() < deadline:
+        position = (telemetry.result or {}).get("position")
+        lat = position.get("lat_deg") if isinstance(position, dict) else None
+        if telemetry.ok and lat is not None:
+            return telemetry
+        time.sleep(0.5)
+        telemetry = call_daemon("telemetry")
+    return telemetry
+
+
 def _await_gps_fix(min_fix: int = 3, timeout: float = 15.0) -> dict[str, object]:
     """Wait until status reports a GPS fix (heartbeat can arrive before GPS_RAW_INT)."""
 
@@ -75,10 +95,13 @@ def test_link_reports_connected_and_telemetry(daemon: None) -> None:
     assert state.get("connected") is True, "no heartbeat from SITL within 15s"
     assert state.get("flight_mode") is not None
 
-    telemetry = call_daemon("telemetry")
-    assert telemetry.ok is True
-    assert telemetry.result is not None
-    assert telemetry.result["position"]["lat_deg"] is not None
+    # GLOBAL_POSITION_INT can lag the heartbeat; wait for position telemetry
+    # to become ready instead of assuming it arrived with the heartbeat.
+    telemetry = _await_position_telemetry()
+    assert telemetry.ok is True, f"telemetry RPC failed within 15s: {telemetry.error}"
+    position = (telemetry.result or {}).get("position")
+    lat = position.get("lat_deg") if isinstance(position, dict) else None
+    assert lat is not None, f"no position telemetry within timeout: {telemetry.result}"
 
 
 def test_guard_rejects_arm_without_confirm(daemon: None) -> None:

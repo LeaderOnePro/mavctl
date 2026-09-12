@@ -99,7 +99,10 @@ mavctl mode LOITER --confirm
 ```
 
 Switching to the already-active mode stays an idempotent success even while
-the map is empty.
+the map is empty. The same rejection also appears when the mode map
+disappears or changes between validation and send (a transient vehicle
+state, never an internal error) — the recovery is the same: re-poll
+`status --json` and retry.
 
 ## altitude_limit / invalid_altitude (exit 5 / exit 2, takeoff)
 
