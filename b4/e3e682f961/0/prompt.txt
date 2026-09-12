@@ -1,0 +1,11 @@
+好的，现在为了 Review，输出以下文件：
+src/mavctl/cli/app.py
+src/mavctl/models/protocol.py
+src/mavctl/daemon/client.py
+src/mavctl/daemon/wire.py
+tests/test_guards.py
+tests/test_adapter.py
+tests/test_server.py
+tests/test_cli.py
+tests/test_sitl.py
+的内容
