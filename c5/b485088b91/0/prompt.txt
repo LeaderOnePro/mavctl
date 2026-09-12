@@ -1,0 +1,51 @@
+阅读 CLAUDE.md 了解项目架构和铁律，然后实现 mavctl 的 Phase 1：项目骨架 + Adapter 层 + 最小可用链路。
+
+## 目标
+
+完成后我能在本地 ArduPilot SITL 上执行：
+  mavctl daemon start --connect udp:127.0.0.1:14550
+  mavctl status --json        # 输出连接状态、飞行模式、armed 状态、电压、GPS fix
+  mavctl telemetry --json     # 输出位置、姿态、速度快照
+  mavctl daemon stop
+
+## 任务清单（按顺序做）
+
+1. 用 uv 初始化项目：pyproject.toml、目录结构（mavctl/cli、mavctl/daemon、
+   mavctl/adapter、mavctl/models、tests/）、ruff + mypy 配置、
+   console_scripts 入口 `mavctl`
+
+2. 定义数据模型（mavctl/models/）：用 pydantic 定义
+   VehicleState、Telemetry、DaemonResponse 等核心模型
+
+3. 定义 Adapter 接口（mavctl/adapter/base.py）：
+   用 typing.Protocol 或 ABC 定义 VehicleAdapter 接口，本阶段只需：
+   connect() / disconnect() / get_state() / get_telemetry()
+
+4. 实现 PymavlinkAdapter（mavctl/adapter/pymavlink_adapter.py）：
+   - 基于 pymavlink 的 mavutil.mavlink_connection
+   - 监听 HEARTBEAT / SYS_STATUS / GLOBAL_POSITION_INT / ATTITUDE / GPS_RAW_INT
+     并维护最新状态快照
+   - 心跳丢失超过 3 秒判定为连接断开
+
+5. 实现 Daemon（mavctl/daemon/）：
+   - asyncio 主循环，Unix socket 监听 ~/.mavctl/daemon.sock
+   - 简单的 JSON-RPC 风格协议：{"method": "...", "params": {...}}
+   - pidfile 管理，daemon start/stop/status 的进程生命周期处理
+   - pymavlink 阻塞读取放在单独线程，通过线程安全方式更新状态
+
+6. 实现 CLI（mavctl/cli/）：
+   - typer 应用：daemon start/stop/status、status、telemetry 命令
+   - 全部支持 --json；严格遵守 CLAUDE.md 中的退出码语义
+   - daemon 未运行时给出清晰提示（退出码 3）
+
+7. 测试：
+   - Adapter 层单测（mock mavlink 消息流）
+   - CLI 层单测（mock daemon socket）
+   - 一个 @pytest.mark.sitl 的集成测试脚本
+
+## 约束
+
+- 严格遵守 CLAUDE.md 三层架构，pymavlink import 只允许出现在 adapter 层
+- 先写接口和模型，再写实现
+- 完成后运行 ruff check . && mypy . && pytest -m "not sitl"，全部通过后
+  给我一份「如何用 SITL 手动验收」的步骤说明
