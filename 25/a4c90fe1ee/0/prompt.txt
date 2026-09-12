@@ -1,0 +1,66 @@
+最终安全 review 发现一个 P0 和一个 P1。请在当前
+fix/command-transaction-safety 分支修复；不要 merge、不要 rebase、不要 tag。
+完成后运行门禁并等待下一轮 review。
+
+## P0：非 force disarm 在飞行状态未知时不得放行
+
+当前 guards.check_disarm() 在以下状态会错误放行：
+
+- state.connected=True
+- state.armed=True 或 None
+- state.landed_state=None
+- state.relative_alt_m=None
+
+这是不安全的：遥测暂缺不能等同于“在地面”，不应依赖飞控 NACK
+作为防线。
+
+要求：
+
+1. 非 --force disarm 时：
+   - armed is False：保持幂等成功；
+   - 明确 in_air 或 relative_alt_m > airborne threshold：保持
+     reason="in_flight"、exit 5；
+   - 明确 on_ground，或满足一个明确且保守的低高度地面判定时：允许；
+   - 其余 ground/airborne 状态未知时：拒绝，exit 5，新增：
+       reason="ground_state_unknown"
+       message 明确说明“已 armed 但无法安全判断是否在地面”
+       hint 指导先检查 telemetry / land；--force 仅限紧急故意停桨。
+2. --force 保持可越过该 guard，但输出 checks 中必须明确标记 forced。
+3. 增加 guards 单测，至少覆盖：
+   - armed=True + landed_state=None + relative_alt_m=None → ground_state_unknown
+   - armed=None + landed_state=None + relative_alt_m=None → ground_state_unknown
+   - landed_state=on_ground → allowed
+   - low known relative altitude 的策略边界
+   - in_air / 高度超阈值 → in_flight
+   - force → allowed
+4. 更新 SITL acceptance 文档的空中 disarm / 不确定状态说明。
+
+## P1：mode map unavailable 不得伪装成可执行
+
+当前 guards.check_mode(available=[]) 记录 degraded 后放行，但 adapter.set_mode()
+会因为 mapping 为空抛 ValueError，最终变成 exit 1 internal error。
+
+要求：
+1. mode mapping unavailable 时不要调用 adapter.set_mode。
+2. 返回结构化、可恢复的拒绝：
+   - reason="mode_map_unavailable"
+   - 清晰 message
+   - hint 指导等待 vehicle mode mapping / 再执行 mavctl status 后重试
+   - 不得返回 exit 1
+3. 选择并统一一个合适退出码：
+   - 若认为 vehicle control state 尚未就绪，用 exit 4；
+   - 若认为属于安全 precondition，用 exit 5；
+   在 docs/tests 中明确语义。
+4. 添加 guard/server/CLI（如适用）测试，确保不会调用 adapter.set_mode，
+   且输出不是 internal error。
+5. 不要引入 MAVLink mode mapping fallback，不要扩大本轮范围。
+
+完成后：
+- 输出 git diff --check；
+- 输出修改的文件清单；
+- 运行：
+  uv run ruff check . &&
+  uv run mypy . &&
+  uv run pytest -m "not sitl"
+- 如 SITL 当前可用，再运行 uv run pytest -m sitl；
+- 不要 commit / push / merge。
