@@ -1,0 +1,187 @@
+我已人工 review 并批准 release PR #10。现在执行 mavctl 0.2.0 的正式发布。
+
+这是不可逆操作。严格按顺序执行；任一步失败都立即停止，保留完整输出，
+不要尝试删除或重推 tag，不要自行升级版本到 0.2.1。
+
+前提：
+- PR #10 是 release/0.2.0 → main；
+- 当前 package version 必须为 0.2.0；
+- PyPI Pending Trusted Publisher 已由我人工配置；
+- TestPyPI rehearsal 已完成；
+- GitHub repo 为 public；
+- 生产 PyPI 当前尚不存在 mavctl 0.2.0。
+
+禁止：
+- 不修改任何飞控实现；
+- 不执行真实 mavctl 飞行控制命令；
+- 不使用 uv publish 或任何 API token；
+- 不删除已有 milestone tags；
+- 不修改 publish.yml；
+- 不创建 GitHub Release，除非我后续明确要求；
+- 不在发布失败时自行更改版本或重新创建 tag。
+
+## 1. 合并 Release PR #10
+
+先核对：
+
+git fetch origin --prune
+git switch release/0.2.0
+git status --short
+git diff --check origin/main...HEAD
+git log --oneline origin/main..HEAD
+grep -n '^version' pyproject.toml
+
+确认：
+- 工作树 clean；
+- 版本精确为 0.2.0；
+- PR #10 仍为 OPEN / CLEAN / MERGEABLE；
+- release 分支不含飞控实现改动。
+
+使用 GitHub squash merge：
+
+release/0.2.0 → main
+
+建议 squash commit message：
+
+chore(release): prepare v0.2.0
+
+## 2. main 上最终发布前回归
+
+合并后：
+
+git switch main
+git pull --ff-only origin main
+git status --short
+git log --graph --oneline --decorate -15
+grep -n '^version' pyproject.toml
+
+确认：
+- main 的版本精确为 0.2.0；
+- PR #10 为 MERGED；
+- 工作树 clean；
+- main HEAD 包含 release squash commit。
+
+运行：
+
+uv run ruff check . &&
+uv run mypy . &&
+uv run pytest -m "not sitl" &&
+uv build &&
+uvx twine check dist/*
+
+如果本地 SITL 仍运行，也运行：
+
+uv run pytest -m sitl
+
+若任一检查失败：
+- 停止；
+- 不创建 tag；
+- 输出失败日志和当前 git status。
+
+## 3. 创建并推送正式 annotated tag
+
+只有全部 main 回归通过后，执行：
+
+git tag -a v0.2.0 -m "mavctl 0.2.0"
+git show v0.2.0 --stat
+git push origin v0.2.0
+
+然后确认：
+
+git ls-remote --tags origin "v0.2.0"
+
+注意：
+- 只推送一次；
+- 不要 force push；
+- 不要删除或重建 tag；
+- tag 推送将触发 `.github/workflows/publish.yml`。
+
+## 4. 观察 GitHub Actions 发布结果
+
+使用 GitHub CLI 或网页/API 检查由 tag `v0.2.0` 触发的：
+
+Publish to PyPI
+
+workflow run。
+
+等待 workflow 完成，记录每个阶段：
+
+- PEP 440 tag validation；
+- uv sync；
+- ruff；
+- mypy；
+- non-SITL pytest；
+- build；
+- tag/package-version match；
+- Publish to PyPI。
+
+如果 publish workflow 失败：
+- 不要重推 tag；
+- 不要修改 tag；
+- 不要自行改版本；
+- 输出 workflow URL、失败 step、完整日志摘要；
+- 停止等待我决定。
+
+## 5. 发布成功后的生产 PyPI 验证
+
+只有 workflow 成功后，执行：
+
+python3 - <<'PY'
+from urllib.request import urlopen
+import json
+
+with urlopen("https://pypi.org/pypi/mavctl/0.2.0/json", timeout=30) as response:
+    data = json.load(response)
+
+print("name:", data["info"]["name"])
+print("version:", data["info"]["version"])
+print("files:")
+for item in data["urls"]:
+    print("-", item["filename"], item["packagetype"], item["url"])
+PY
+
+然后在一个全新环境中安装正式 PyPI 版本：
+
+rm -rf /tmp/mavctl-pypi-smoke
+uv venv /tmp/mavctl-pypi-smoke
+
+VIRTUAL_ENV=/tmp/mavctl-pypi-smoke \
+  uv pip install \
+  --index-url https://pypi.org/simple/ \
+  mavctl==0.2.0
+
+/tmp/mavctl-pypi-smoke/bin/mavctl --help
+/tmp/mavctl-pypi-smoke/bin/mavctl daemon --help
+
+再验证不是本地源码：
+
+/tmp/mavctl-pypi-smoke/bin/python - <<'PY'
+import importlib.metadata
+import mavctl
+
+print("version:", importlib.metadata.version("mavctl"))
+print("module:", mavctl.__file__)
+print("distribution:", importlib.metadata.distribution("mavctl").locate_file(""))
+assert importlib.metadata.version("mavctl") == "0.2.0"
+assert "site-packages/mavctl" in mavctl.__file__
+PY
+
+不要连接 SITL 或发飞控命令；只验证安装和 CLI entrypoint。
+
+## 6. 最终报告
+
+最后只汇报：
+
+1. PR #10 squash merge SHA；
+2. main 当前 HEAD；
+3. tag v0.2.0 指向的 commit SHA；
+4. Publish to PyPI workflow URL 与最终状态；
+5. 正式 PyPI JSON 验证结果；
+6. clean venv 安装 / mavctl --help / daemon --help 结果；
+7. main 上 ruff / mypy / pytest 非 SITL / SITL（如运行）/ build / twine 结果；
+8. git status --short；
+9. 明确确认：
+   - mavctl 0.2.0 已正式发布到 production PyPI；
+   - 未使用 API token；
+   - 未修改飞控实现；
+   - 未启动 Phase 3。
