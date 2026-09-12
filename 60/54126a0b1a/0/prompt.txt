@@ -1,0 +1,146 @@
+Phase 2 已完成，main 当前 tag 为 v0.2.0-phase2。现在开始一个纯文档/
+agent-integration 工作：创建 mavctl Agent Skill v1。
+
+新建分支：
+
+feat/agent-skill
+
+严格要求：
+- 不修改飞控实现、guards、adapter、daemon、CLI 行为；
+- 不修改 exit-code 契约；
+- 不执行真实飞行命令；
+- 不 merge、不发布 PyPI、不打 release tag；
+- Skill 内容必须基于当前 main 的真实命令、--help、AGENTS.md、
+  docs/SITL_ACCEPTANCE_PHASE2.md 和测试，不得臆造不存在的 flag 或能力。
+
+## 目标目录
+
+创建：
+
+skills/mavctl-flight/
+  SKILL.md
+  references/workflows.md
+  references/safety.md
+  references/troubleshooting.md
+
+请先检查当前 Claude Code / agent Skill 官方规范；若当前环境已经有可识别的
+Skill 格式或路径约定，遵循它。若没有明确规范，使用标准 YAML frontmatter +
+Markdown 的可移植形式。
+
+## SKILL.md 必须精炼，包含
+
+1. name 和 description：
+   明确说明在用户要求控制 MAVLink / ArduPilot vehicle 或 SITL、
+   执行起飞、降落、RTL、模式切换时使用。
+
+2. 环境/连接前置流程：
+   - daemon status；
+   - daemon 未运行时怎样启动；
+   - status --json 检查 connected、heartbeat、gps；
+   - 不要把 SITL 启动命令硬编码为唯一方式，但可以说明默认 endpoint
+     udp:127.0.0.1:14550。
+
+3. 标准起飞工作流：
+   - mavctl mode GUIDED --confirm --wait
+   - mavctl arm --confirm
+   - 轮询 mavctl status --json，直到 armed=true
+   - mavctl takeoff --alt <m> --confirm --wait --timeout <s>
+   - 起飞中不要发另一个危险命令；status / telemetry 可查询。
+
+4. 标准结束工作流：
+   - 正常优先 rtl --confirm --wait；
+   - 需要原地落地则 land --confirm --wait；
+   - 不要将 disarm 作为正常降落方式；
+   - disarm --force 是 emergency motor stop，空中可能坠机。
+
+5. 安全和退出码：
+   - 所有状态改变命令均需 --confirm；
+   - 推荐先 --dry-run；
+   - exit 4：链路失去或 heartbeat 过期，停止进一步控制、排查链路；
+   - exit 5：guard 拒绝，读取 JSON detail.reason 和 hint；
+   - exit 6：飞控 NACK/ACK timeout/wait timeout，查询 status 再决定；
+   - 不存在 arm --force，禁止试图绕过 pre-arm checks；
+   - landed_state 可能为 n/a，谨慎使用 disarm。
+
+6. 异步/观察原则：
+   - --wait 等目标状态；
+   - arm ACK 可能早于 heartbeat armed=true，必须轮询确认；
+   - 使用 status --json 作为当前世界状态来源；
+   - daemon / adapter 已串行化危险操作，但 agent 仍不应并行发多个危险命令。
+
+7. 说明当前范围：
+   - 目前支持 status、telemetry、arm、disarm、mode、takeoff、land、rtl；
+   - mission upload/download、parameter editing、geofence 等尚未实现；
+   - 不要猜测或模拟不存在的命令。
+
+## references/workflows.md
+
+给出可复制的工作流：
+
+- 启动 daemon 并验证连接；
+- 安全起飞到 10m；
+- status/telemetry 观察；
+- RTL；
+- land；
+- dry-run；
+- 安全处理 exit 4/5/6；
+- SITL 常见运行方式。
+
+每一步都使用当前真实命令与 flags。
+
+## references/safety.md
+
+解释：
+
+- confirm / dry-run；
+- 正向地面证据与 ground_state_unknown；
+- force-arm 被刻意禁止；
+- disarm --force 的含义；
+- 高度限制；
+- ACK 与实际飞行状态的区别；
+- link-loss 行为；
+- status / telemetry 可能有缓存数据，connected=false 时不可当实时状态使用。
+
+## references/troubleshooting.md
+
+覆盖：
+
+- daemon 未运行 exit 3；
+- vehicle not connected exit 4；
+- confirmation_required；
+- gps_not_ready；
+- wrong_mode；
+- not_armed；
+- ground_state_unknown；
+- mode_map_unavailable；
+- altitude_limit / invalid_altitude；
+- NACK / timeout；
+- macOS / SITL 环境：忘记 source ~/venv-ardupilot/bin/activate 后的
+  ModuleNotFoundError: pexpect。
+
+## 验证
+
+1. 检查 Skill 中每一个 mavctl 命令、flag 和 exit code 是否与：
+   - mavctl --help；
+   - 各 command --help；
+   - AGENTS.md；
+   - docs/SITL_ACCEPTANCE_PHASE2.md；
+   - 当前代码
+   完全一致。
+
+2. 添加一个轻量的文档一致性测试或脚本（若不会造成过度工程）：
+   至少验证 SKILL.md 不出现当前 CLI 未支持的危险命令名
+   （例如 mission / param / geofence）。
+
+3. 运行：
+
+uv run ruff check .
+uv run mypy .
+uv run pytest -m "not sitl"
+
+最后汇报：
+- 新增文件；
+- 当前 Skill 规范依据；
+- 文档一致性验证方式；
+- 门禁结果；
+- 不要 commit、push、merge。
