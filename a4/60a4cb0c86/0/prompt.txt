@@ -1,0 +1,26 @@
+Skill v1 即将提交前，进行最后一次只读人工核对。
+
+不要修改任何文件，不要 commit、push、merge、rebase、tag，
+不要运行 mavctl 飞行控制命令。
+
+请原样完整输出当前工作区的以下五个文件：
+
+1. skills/mavctl-flight/SKILL.md
+2. skills/mavctl-flight/references/workflows.md
+3. skills/mavctl-flight/references/safety.md
+4. skills/mavctl-flight/references/troubleshooting.md
+5. tests/test_skill_docs.py
+
+要求：
+- 不得使用省略号、摘要、diff 片段或“见工作区”；
+- 保留所有 Markdown backtick fence；
+- 每个文件必须从第一行到最后一行完整输出；
+- 如果单次输出太长，按文件分 Part 连续输出，不能截断文件。
+
+然后只读运行并输出：
+
+uv run pytest tests/test_skill_docs.py -q
+uv run pytest -m "not sitl"
+git status --short
+
+最后停止，等待人工 review。
