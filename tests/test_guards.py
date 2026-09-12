@@ -287,6 +287,15 @@ def test_disarm_on_ground_ceiling_is_configurable() -> None:
     assert raised.allowed is True
 
 
+# -- max_heartbeat_age_s validation (B2) -------------------------------------
+
+
+@pytest.mark.parametrize("bad", [0.0, -1.0, float("nan"), float("inf")])
+def test_guard_config_rejects_non_positive_or_nonfinite_heartbeat_age(bad: float) -> None:
+    with pytest.raises(ValidationError):
+        GuardConfig(max_heartbeat_age_s=bad)
+
+
 # -- disarm ground-evidence freshness (Phase 2.1 P0) ------------------------
 #
 # Principle extension: "missing telemetry is not ground" now also means

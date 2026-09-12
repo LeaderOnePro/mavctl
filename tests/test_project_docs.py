@@ -267,9 +267,10 @@ def test_pyproject_packaging_metadata_is_release_ready_shape() -> None:
     assert metadata_line(r'^name = "mavctl"$')
     assert metadata_line(r'^readme = "README\.md"$')
     assert metadata_line(r'^license = "MIT"$')
-    # The release under preparation — plain PEP 440, no dev suffix. The
-    # published production release remains 0.2.0 (see the claim test above).
-    assert metadata_line(r'^version = "0\.2\.1"$')
+    # The current development version (PEP 440 dev suffix); the release
+    # version is promoted before tagging. Published production releases
+    # remain 0.2.0 and 0.2.1 (see the claim test above).
+    assert metadata_line(r'^version = "0\.2\.2\.dev0"$')
     assert metadata_line(r'^mavctl = "[^"]+"$')
     license_text = (_ROOT / "LICENSE").read_text(encoding="utf-8")
     assert "MIT License" in license_text
@@ -277,6 +278,16 @@ def test_pyproject_packaging_metadata_is_release_ready_shape() -> None:
 
 
 # -- 0.2.1 release preparation ----------------------------------------------
+
+
+def test_publishing_doc_states_022_dev_not_published() -> None:
+    assert "## Development state: 0.2.2.dev0" in _PUBLISHING
+    normalized = " ".join(_PUBLISHING.split())
+    assert "It is **not** published" in normalized or (
+        "mavctl 0.2.2 is under development" in normalized
+    )
+    # No 0.2.2 release record may exist while only the dev version is out.
+    assert "## Production release record: 0.2.2" not in _PUBLISHING
 
 
 def test_readmes_highlight_the_021_notable_changes() -> None:

@@ -9,7 +9,7 @@ import signal
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from mavctl.adapter.base import AdapterError, VehicleAdapter
+from mavctl.adapter.base import AdapterError, ModeMappingUnavailableError, VehicleAdapter
 from mavctl.daemon import guards, wire
 from mavctl.daemon.guards import GuardConfig, GuardDecision
 from mavctl.models import CommandOutcome, DaemonResponse, ExitCode, RpcRequest, WaitStatus
@@ -214,7 +214,24 @@ class DaemonServer:
             pre = self._pre_execute(decision, dry_run=_flag(p, "dry_run"))
             if pre is not None:
                 return pre
-            outcome = await self._blocking(self._adapter.set_mode, mode)
+            try:
+                outcome = await self._blocking(self._adapter.set_mode, mode)
+            except ModeMappingUnavailableError:
+                # TOCTOU: the mapping was valid when the guard checked
+                # mode_names(), but vanished or changed before the adapter
+                # could resolve the target. Structured and retryable —
+                # never an internal error.
+                return DaemonResponse.failure(
+                    ExitCode.SAFETY_REJECTED,
+                    "vehicle mode mapping is not available; cannot switch mode",
+                    {
+                        "reason": "mode_map_unavailable",
+                        "hint": (
+                            "wait for the vehicle's mode map to populate "
+                            "(check: mavctl status), then retry this command"
+                        ),
+                    },
+                )
             if not outcome.accepted:
                 return self._command_result("mode", outcome)
             status = await self._maybe_wait(
@@ -368,6 +385,11 @@ class DaemonServer:
         loop = asyncio.get_running_loop()
         try:
             return await loop.run_in_executor(None, fn, *args)
+        except ModeMappingUnavailableError:
+            # A transient vehicle state that the mode command maps to a
+            # structured, retryable rejection — not an ADAPTER_ERROR outcome
+            # and never an internal error.
+            raise
         except AdapterError as exc:
             return CommandOutcome(accepted=False, result_name=f"ADAPTER_ERROR: {exc}")
 

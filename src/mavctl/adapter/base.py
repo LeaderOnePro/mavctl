@@ -20,6 +20,18 @@ class ConnectionLostError(AdapterError):
     """Raised when the underlying link cannot be established or is lost."""
 
 
+class ModeMappingUnavailableError(AdapterError):
+    """Raised when a flight mode cannot be resolved against the vehicle's
+    mode mapping.
+
+    This is a transient vehicle state (the mapping has not populated yet, or
+    changed between validation and send), not a user-input error: the daemon
+    maps it to a structured, retryable safety rejection (exit 5
+    ``mode_map_unavailable``) instead of an internal error. Unknown-mode user
+    input is rejected earlier by the guard (exit 2 ``unknown_mode``).
+"""
+
+
 @runtime_checkable
 class VehicleAdapter(Protocol):
     """Transport-agnostic view of a single MAVLink vehicle.

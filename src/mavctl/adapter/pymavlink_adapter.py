@@ -17,7 +17,7 @@ from typing import Any
 
 from pymavlink import mavutil
 
-from mavctl.adapter.base import ConnectionLostError
+from mavctl.adapter.base import ConnectionLostError, ModeMappingUnavailableError
 from mavctl.models import (
     Attitude,
     Battery,
@@ -286,7 +286,15 @@ class PymavlinkAdapter:
         mapping = self._mode_mapping()
         number = mapping.get(mode.upper())
         if number is None:
-            raise ValueError(f"unknown flight mode {mode!r}; available: {sorted(mapping)}")
+            # The guard validates user input against mode_names(); reaching
+            # here with an unresolvable target means the mapping vanished or
+            # changed between validation and send — a transient vehicle
+            # state, reported as a typed adapter error, never an internal
+            # error.
+            raise ModeMappingUnavailableError(
+                f"flight mode {mode!r} cannot be resolved: the vehicle mode "
+                f"mapping is unavailable or changed (available now: {sorted(mapping)})"
+            )
         return self._send_command(
             mavutil.mavlink.MAV_CMD_DO_SET_MODE,
             [float(mavutil.mavlink.MAV_MODE_FLAG_CUSTOM_MODE_ENABLED), float(number)],

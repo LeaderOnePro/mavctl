@@ -35,6 +35,12 @@ Production PyPI release: mavctl 0.2.0
 - Published artifacts: wheel and sdist
 - Verification: clean-venv install, `mavctl --help`, `mavctl daemon --help`
 
+## Development state: 0.2.2.dev0
+
+mavctl 0.2.2 is under development (`0.2.2.dev0` in `pyproject.toml` on the
+development branch). It is **not** published: production releases remain
+0.2.0 and 0.2.1, and no 0.2.2 release record exists yet.
+
 ## Production release record: 0.2.1
 
 mavctl 0.2.1 is published on production PyPI.
