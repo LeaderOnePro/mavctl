@@ -1,0 +1,65 @@
+Phase 2 和 mavctl-flight Skill v1 已合并到 main。
+
+现在开始一个“项目入口与发布准备”工作，不开始 Phase 3，也不实际发布 PyPI。
+
+新建分支：
+
+feat/project-readme-and-publishing
+
+严格约束：
+
+- 不修改飞控实现、guards、adapter、daemon、CLI 语义；
+- 不改变 exit-code 契约；
+- 不运行任何真实 mavctl 飞行控制命令；
+- 不修改已发布 tag；
+- 不实际上传 PyPI；
+- 不创建 GitHub release；
+- 不开始 mission / parameter / geofence 功能；
+- 所有文档必须以当前 main 的真实行为为准，不得臆造 future CLI。
+
+## 1. README.md
+
+如果 README.md 不存在，创建它；如果存在，重写/完善为项目的主入口文档。
+
+README 必须包含：
+
+### 标题与一句话定位
+
+例如：
+
+# mavctl
+
+> Headless, agent-first MAVLink ground-control CLI for ArduPilot vehicles.
+
+同时清楚写明：
+
+- ArduPilot-first；
+- 面向 humans 和 AI coding agents；
+- 基于 daemon + CLI；
+- 当前主要在 ArduPilot SITL 上验证；
+- 不要宣称已支持所有 MAVLink vehicle 或已适合生产真机飞行。
+
+### Why mavctl
+
+简短说明：
+
+- GUI GCS（Mission Planner / QGroundControl）适合人工操控；
+- mavctl 是给 shell、脚本和 agent 的结构化接口；
+- daemon 保持 MAVLink 链路与状态；
+- CLI 输出 JSON、明确 exit code、安全护栏；
+- 不内置 LLM，而是能被 Claude Code / Codex / OpenClaw 等调用。
+
+### Current capabilities
+
+准确列出已实现：
+
+```bash
+mavctl daemon start|stop|status
+mavctl status
+mavctl telemetry
+mavctl arm
+mavctl disarm
+mavctl mode <MODE>
+mavctl takeoff --alt <metres>
+mavctl land
+mavctl rtl
