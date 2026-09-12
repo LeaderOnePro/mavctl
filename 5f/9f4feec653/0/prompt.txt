@@ -1,0 +1,89 @@
+Skill v1 内容 review 基本通过，但发现 Markdown fence 与文档测试存在问题。
+请只修改 Skill 文档和 tests/test_skill_docs.py，不要修改任何飞控实现、
+adapter、daemon、CLI 行为、测试协议或 release 相关文件。
+
+不要 commit、push、merge、rebase、tag，也不要运行任何 mavctl 飞行控制命令。
+
+## P0：修复 Markdown fence 结构
+
+请检查并修复以下文件中的 Markdown fenced code blocks：
+
+- skills/mavctl-flight/SKILL.md
+- skills/mavctl-flight/references/workflows.md
+- skills/mavctl-flight/references/safety.md
+- skills/mavctl-flight/references/troubleshooting.md
+
+要求：
+
+1. 每个 ``` 或 ```` fence 必须有对应且匹配的 closing fence；
+2. 不要用 ```markdown 包裹整个 Markdown 文档；
+3. 不要用四个 backtick 包裹整个 Markdown 文档；
+4. `SKILL.md` 的标准起飞 workflow 中：
+   - 仅 mavctl 命令及 shell 注释放在 ```bash code block；
+   - “Never send a second dangerous command...”等解释文字必须在 code block 外；
+5. 每个 references/*.md 都必须作为正常 Markdown 文档，以 `# ...` heading
+   开头，而不是以 code fence 开头；
+6. 确保所有 table、heading、list、paragraph 能正常渲染；
+7. 不改变已核对正确的安全语义、命令、flag、exit code 或 reason 名称。
+
+## P1：改善 agent 工作流表达
+
+1. 在 workflows.md 中移除或替换用 sed 解析 JSON 的 armed polling shell loop。
+2. 改为明确的 agent 指令：
+   - 调用 `mavctl status --json`；
+   - 检查 JSON 字段 `armed == true`；
+   - 仅在确认 armed=true 后发 takeoff；
+   - 不要只依赖 arm ACK。
+3. 可以保留一个人类 shell 示例，但不要把它作为 agent 推荐路径；
+   如果保留，使用可靠 JSON parser 或明确其只是示例。
+
+## P1：增强 tests/test_skill_docs.py
+
+保留现有四个测试，并补充：
+
+1. 文档格式测试：
+   - 每个文档的 fenced code block 必须平衡；
+   - 不允许 references/*.md 的第一个非空行是 code fence；
+   - SKILL.md 的第一个非 frontmatter 内容必须是 Markdown heading，
+     不是 code fence。
+
+2. 安全语义测试：
+   - 文档必须包含 `--confirm`、`--dry-run`；
+   - 文档必须明确提及 `ground_state_unknown`；
+   - 文档必须明确提及 `link_lost_during_wait`；
+   - 文档必须包含“arm ACK 早于 armed=true 状态”的等价说明；
+   - 文档不得将 `mavctl arm --force` 作为实际命令 invocation；
+   - 文档必须将 `mavctl disarm --confirm --force` 标记为 emergency /
+     motor stop / crash risk 的等价含义。
+
+3. 命令验证：
+   - 继续确保 fenced code block 和 inline code 中所有 `mavctl <cmd>`
+     都属于当前支持命令集合；
+   - 未实现命令可以在 prose 中说明“未实现”，但不能作为 invocation；
+   - 测试应尽量只分析 Markdown code block 与 inline code，不要因正常
+     prose 中提及未来能力而误报。
+
+4. 禁止把整个文件错误地当成 fenced block：
+   - 使用一个小的、可读的 parser/helper；
+   - 不需要引入额外 Markdown 第三方依赖。
+
+## 验证
+
+运行：
+
+uv run ruff check .
+uv run mypy .
+uv run pytest -m "not sitl"
+
+再输出：
+
+git status --short
+git diff --check
+git diff --no-index /dev/null skills/mavctl-flight/SKILL.md || true
+git diff --no-index /dev/null tests/test_skill_docs.py || true
+
+最后汇报：
+- 每个 Skill 文档的 fence 校验结果；
+- 新增/修改的测试名称；
+- 门禁结果；
+- 不要 commit、push、merge。
