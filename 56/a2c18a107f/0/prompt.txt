@@ -1,0 +1,111 @@
+最终 review 发现当前工作区存在源码/测试/汇报不同步迹象，以及一个危险的
+force-arm 旁路。不要 merge、rebase、tag 或 push。请在当前分支完成以下修复，
+并先输出核对证据。
+
+## 0. 首先核对工作区一致性
+
+执行并原样输出：
+
+git status --short
+git diff -- src/mavctl/daemon/guards.py
+grep -n "max_on_ground_alt_m\|ground_state_unknown" src/mavctl/daemon/guards.py
+grep -n "max_on_ground_alt_m\|ground_state_unknown" tests/test_guards.py
+uv run pytest tests/test_guards.py -q
+
+如果 tests/test_guards.py 引用了 GuardConfig.max_on_ground_alt_m，但实际
+guards.py 不含该字段，解释原因。不要忽略这个不一致。
+
+## P0-1：修复非 force disarm 的未知地面状态
+
+确保 src/mavctl/daemon/guards.py 的真实实现包含：
+
+1. GuardConfig 新增：
+   max_on_ground_alt_m: float = 0.5
+
+2. check_disarm 的顺序必须是：
+   a. armed is False -> 幂等成功；
+   b. force -> 允许，但 checks 中明确 "forced"；
+   c. 明确空中（landed_state=in_air，或 rel_alt > airborne threshold）
+      -> reason=in_flight，exit 5；
+   d. 明确地面（landed_state=on_ground，或 rel_alt 已知且
+      <= max_on_ground_alt_m）-> 允许；
+   e. 其他任何 ground/airborne 状态未知 -> 拒绝：
+      reason=ground_state_unknown，exit 5。
+
+3. 空中证据必须优先于地面证据；例如 landed_state=on_ground 但
+   relative_alt_m=15 时仍应拒绝 in_flight。
+
+4. 保留并确保以下测试真实通过：
+   - armed=True/None + landed=None + alt=None -> ground_state_unknown
+   - on_ground -> allowed
+   - low-alt boundary -> allowed / unknown band
+   - in_air/high-alt -> in_flight
+   - contradictory telemetry -> in_flight
+   - force -> allowed with forced check
+
+## P0-2：移除 force-arm 支持
+
+mavctl Phase 2 不得暴露绕过 ArduPilot pre-arm checks 的 force-arm。
+
+要求：
+1. CLI `mavctl arm` 删除 --force 参数；
+2. arm RPC 不得把 force=true 传给 adapter；
+3. VehicleAdapter.arm() 改为无参数；
+4. PymavlinkAdapter.arm() 固定发送 MAV_CMD_COMPONENT_ARM_DISARM：
+   param1=1.0, param2=0.0；
+5. tests/fakes.py、test_adapter.py、test_server.py、test_cli.py、
+   docs/SITL_ACCEPTANCE_PHASE2.md 全部同步；
+6. 若恶意/旧客户端直接通过 Unix RPC 发送：
+   {"method":"arm","params":{"confirm":true,"force":true}}
+   daemon 必须：
+   - 忽略 force 字段，或
+   - 更推荐：exit 2 拒绝 unsupported force arm；
+   但绝不能 force arm。
+7. `disarm --force` 保留；帮助文案和文档必须明确：
+   “emergency motor stop; using in flight may cause a crash”。
+
+## P1：输入和显示语义
+
+1. timeout：
+   - daemon 层要求 timeout 是 finite 且 > 0；
+   - 非数值、NaN、Infinity、0、负值均 exit 2；
+   - 不再静默回退到 60 秒；
+   - 未提供 timeout 时仍默认 60 秒；
+   - CLI 若可加范围校验则加，但 daemon 是最终边界。
+
+2. takeoff altitude：
+   - daemon 层拒绝 NaN / Infinity；
+   - 这些情况 exit 2 / invalid_altitude；
+   - 不允许进入 guard 或 adapter。
+
+3. 人类 status 输出：
+   - connected=True 且 armed=None 时显示 `unknown`，不能显示
+     `disarmed`；
+   - 添加 CLI 测试。
+
+## 测试要求
+
+补充或更新测试：
+- direct RPC force=true arm 永不触发 adapter.force arm；
+- adapter arm 发送 param2=0；
+- timeout 的 invalid / zero / negative / NaN / Infinity；
+- altitude 的 NaN / Infinity；
+- human status armed=None -> unknown；
+- 保留已有所有 P0 测试。
+
+最后运行：
+
+uv run ruff check . &&
+uv run mypy . &&
+uv run pytest -m "not sitl"
+
+若 SITL 正在运行，也运行：
+
+uv run pytest -m sitl
+
+输出：
+- git diff --check；
+- 修改文件列表；
+- 每个新增安全语义的测试名称；
+- 门禁结果；
+- 不要 commit、push、merge、rebase 或 tag。
