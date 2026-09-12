@@ -1,0 +1,42 @@
+README / PyPI publishing preparation 进入最终人工 review。
+
+不要修改文件，不要格式化，不要 commit、push、merge、rebase、tag，
+不要发布 PyPI，不要运行任何 mavctl 飞行控制命令。
+
+请原样完整输出当前 feat/project-readme-and-publishing 分支的以下文件：
+
+1. README.md
+2. pyproject.toml
+3. .github/workflows/publish.yml
+4. docs/PUBLISHING.md
+5. tests/test_project_docs.py
+6. .gitignore
+
+要求：
+- 不得用摘要、diff 片段、... 或“见工作区”代替内容；
+- 每个文件从第一行到最后一行完整输出；
+- 保留 workflow YAML 缩进、Markdown code fence 和 pyproject TOML 格式；
+- 若单条输出过长，按文件分 Part 连续输出，但不能截断文件。
+
+然后只读执行并原样输出：
+
+git status --short
+git diff --check
+git diff --stat origin/main...HEAD
+git diff --name-status origin/main...HEAD
+git diff -- uv.lock
+uv run pytest tests/test_project_docs.py -q
+uv build
+python - <<'PY'
+from pathlib import Path
+import zipfile
+
+wheels = sorted(Path("dist").glob("*.whl"))
+assert wheels, "no wheel found in dist/"
+wheel = wheels[-1]
+with zipfile.ZipFile(wheel) as zf:
+    metadata = next(name for name in zf.namelist() if name.endswith(".dist-info/METADATA"))
+    print(zf.read(metadata).decode("utf-8"))
+PY
+
+最后停止，等待人工 review。
