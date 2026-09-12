@@ -1,0 +1,118 @@
+现在处理 stacked PR #3 的 rebase 和最终合并前验证。
+
+当前事实：
+- main 已包含 PR #2，HEAD = 5e73c9a；
+- PR #3 head = fix/command-transaction-safety；
+- PR #3 当前仍以 feat/flight-control 为 base；
+- PR #3 包含 transaction safety 和 final safety hardening；
+- 仓库使用 squash merge，因此必须 rebase PR #3 到最新 main。
+
+严格要求：
+- 不 merge PR #3；
+- 不打 tag；
+- 不删除分支；
+- 不开始 Skill、PyPI 或 Phase 3；
+- 不丢弃任何安全测试或文档改动；
+- 若发生无法确定语义的冲突，立即停止并汇报，不要猜测。
+
+## 1. 备份与 rebase 前核对
+
+执行：
+
+git fetch origin --prune
+git status --short
+git switch fix/command-transaction-safety
+git log --oneline --decorate origin/main..HEAD
+git diff --stat origin/main...HEAD
+git diff --check origin/main...HEAD
+
+确认工作树 clean，且当前分支确实包含：
+- fe7fcc0 fix(transaction): atomic ACK + command lock + IN_PROGRESS + link-loss safety
+- 02a08ea fix(safety): harden disarm state checks and remove force arm
+
+## 2. Rebase 到新的 main
+
+执行：
+
+git rebase origin/main
+
+如果发生冲突：
+
+1. 优先保留新 main 中已合入的 Phase 2 基础飞控功能；
+2. 保留 fix 分支中的所有安全加固：
+   - adapter command transaction lock；
+   - daemon command lock；
+   - target autopilot locking；
+   - ACK source filtering；
+   - telemetry source filtering；
+   - late ACK quarantine；
+   - IN_PROGRESS；
+   - --wait 中途失链 exit 4；
+   - ground_state_unknown；
+   - 移除 force-arm；
+   - finite altitude / timeout validation；
+   - 对应 tests 和验收文档；
+3. 不要通过删除测试、删除 guards 或删除文档来“解决”冲突；
+4. 若一个冲突文件无法明确判断，停止并输出：
+   git status
+   git diff
+   git diff --cached
+   并说明冲突上下文。
+
+若 rebase 成功，输出：
+
+git log --graph --oneline --decorate -25
+git log --oneline origin/main..HEAD
+git diff --stat origin/main...HEAD
+git diff --check origin/main...HEAD
+
+## 3. Rebase 后完整验证
+
+运行：
+
+uv run ruff check . &&
+uv run mypy . &&
+uv run pytest -m "not sitl"
+
+如果本地 SITL 当前正在运行，再运行：
+
+uv run pytest -m sitl
+
+如 SITL 未运行，不要自行启动，只报告未运行。
+
+## 4. 推送与更新 PR #3
+
+只有上述门禁全部通过后：
+
+git push --force-with-lease origin fix/command-transaction-safety
+
+然后将 PR #3 的 base branch 改为：
+
+main
+
+确认 PR #3 最终为：
+
+main <- fix/command-transaction-safety
+
+确认 PR #3 的 diff 只包含安全加固及其测试/文档，而不重复包含 PR #2 已合入的基础飞控主体。
+
+更新 PR #3 描述，注明：
+
+- rebased onto main after PR #2 squash merge;
+- PR #2 已提供基础 flight-control；
+- 本 PR 只提供 transaction safety、ACK/link safety 和 final guard hardening；
+- 149 non-SITL tests + 3 SITL tests passing（若 rebase 后数量变化，写真实数量）。
+
+## 5. 停止并汇报
+
+不要 merge PR #3、不要打 tag。
+
+最后只汇报：
+
+1. rebase 后 HEAD SHA；
+2. `git log --oneline origin/main..HEAD`；
+3. PR #3 URL、base/head、mergeStateStatus；
+4. `git diff --stat origin/main...HEAD`；
+5. ruff / mypy / non-SITL pytest / SITL pytest 结果；
+6. 最终 git status --short；
+7. 是否遇到冲突，以及如何处理。
