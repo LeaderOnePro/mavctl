@@ -1,0 +1,1 @@
+安装 mavctl，https://github.com/LeaderOnePro/mavctl ，不要 clone repo，因为它是专为 AI Agent 设计的嘛，你作为一个 Agent ，来测试一下
