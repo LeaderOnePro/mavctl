@@ -1,0 +1,132 @@
+README / packaging / publishing preparation 已通过人工 review。
+
+先做一个唯一的小清理，然后提交、推送、开 PR、合并到 main。
+不要发布 PyPI，不要打 release tag，不要开始 Phase 3，不要执行 mavctl
+飞行控制命令。
+
+## 1. 清理 .gitignore
+
+检查 .gitignore 的第一行。
+
+若第一行是字面量：
+
+gitignore
+
+删除该行。它不是注释，而是无意义的 ignore pattern。除此之外不要修改
+.gitignore 的其他规则。
+
+## 2. 最终验证
+
+执行：
+
+git status --short
+git diff --check
+uv run ruff check .
+uv run mypy .
+uv run pytest -m "not sitl"
+uv build
+
+确认：
+- dist/ 仍不被 Git 跟踪；
+- uv.lock 的唯一语义更新是 mavctl 自身版本 0.1.0 → 0.2.0.dev0；
+- 没有飞控实现、guards、adapter、daemon 或 CLI 语义改动。
+
+## 3. 提交
+
+确认当前分支为：
+
+feat/project-readme-and-publishing
+
+加入并提交以下预期文件：
+
+- README.md
+- LICENSE
+- pyproject.toml
+- uv.lock
+- .github/workflows/publish.yml
+- docs/PUBLISHING.md
+- tests/test_project_docs.py
+- .gitignore（仅当删除了无意义首行）
+
+提交信息：
+
+docs: add project guide and PyPI publishing preparation
+
+## 4. 推送与 PR
+
+推送：
+
+git push -u origin feat/project-readme-and-publishing
+
+创建 PR：
+
+main <- feat/project-readme-and-publishing
+
+PR 标题：
+
+docs: add project guide and PyPI publishing preparation
+
+PR 描述必须说明：
+
+### Scope
+- Added README as the public project entrypoint.
+- Added MIT LICENSE.
+- Added PyPI-ready packaging metadata with unreleased version `0.2.0.dev0`.
+- Added OIDC Trusted Publishing workflow for formal `vX.Y.Z` tags only.
+- Added publishing runbook and README/workflow consistency tests.
+
+### Safety / release policy
+- `v0.2.0-phase2` remains a Git milestone tag and cannot publish to PyPI.
+- PyPI publication requires a future formal `vX.Y.Z` tag matching package version.
+- No PyPI API token is stored or required by the production workflow.
+- PyPI installation commands remain clearly marked as not available yet.
+
+### Validation
+- ruff passed.
+- mypy strict passed.
+- pytest -m "not sitl" passed.
+- uv build produced wheel and sdist successfully.
+- No flight-control implementation changed.
+- No SITL test required for this documentation/packaging-only PR.
+
+## 5. Merge
+
+确认 PR CLEAN / MERGEABLE 后，使用 squash merge：
+
+feat/project-readme-and-publishing → main
+
+建议 squash commit message：
+
+docs: add project guide and PyPI publishing preparation
+
+合并后：
+
+git switch main
+git pull --ff-only origin main
+git status --short
+git log --graph --oneline --decorate -15
+
+在 main 上执行：
+
+uv run ruff check .
+uv run mypy .
+uv run pytest -m "not sitl"
+uv build
+
+不要运行 SITL 测试；本 PR 不修改飞控行为。
+
+## 6. 最终汇报
+
+仅汇报：
+
+1. PR URL 和最终状态；
+2. squash merge commit SHA；
+3. main HEAD；
+4. main 上 ruff / mypy / pytest 非 SITL / uv build 结果；
+5. pyproject 当前版本；
+6. git status --short；
+7. 明确确认：
+   - 未发布 PyPI；
+   - 未创建正式 vX.Y.Z release tag；
+   - 未开始 Phase 3；
+   - 未改飞控实现。
