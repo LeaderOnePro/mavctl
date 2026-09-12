@@ -1,0 +1,110 @@
+最终 Phase 2 review 已通过。现在执行提交与 PR 收尾准备，但暂时不要 merge、
+不要 rebase、不要删除分支、不要 tag。
+
+## 1. 最终验证
+
+先执行：
+
+git status --short
+git diff --check
+uv run ruff check .
+uv run mypy .
+uv run pytest -m "not sitl"
+
+如果 SITL 当前正在运行，再执行：
+
+uv run pytest -m sitl
+
+若任一失败，停止并汇报，不要 commit。
+
+## 2. 提交当前未提交的 Phase 2 review 修复
+
+确认当前分支是：
+
+fix/command-transaction-safety
+
+将当前未提交修改分成语义清晰的 Conventional Commit。可以用一个 commit，
+建议信息为：
+
+fix(safety): harden disarm state checks and remove force arm
+
+该 commit 应包含：
+
+- disarm 的 ground_state_unknown 安全护栏；
+- 保守地面高度阈值；
+- 移除 force-arm CLI / RPC / adapter 路径；
+- disarm --force 的 emergency-motor-stop 文案；
+- mode_map_unavailable 行为；
+- finite altitude / timeout 校验；
+- armed=None 人类状态输出；
+- 对应测试和 SITL 验收文档。
+
+提交后执行：
+
+git show --stat --oneline HEAD
+git status --short
+
+## 3. 推送并更新 stacked PR #3
+
+推送当前 fix 分支：
+
+git push origin fix/command-transaction-safety
+
+确认 PR #3 仍然：
+
+- head：fix/command-transaction-safety
+- base：feat/flight-control
+- 包含刚刚的安全修复 commit
+- 不包含工作树未提交内容
+
+更新 PR #3 描述，补充一个「Final safety review hardening」小节，明确：
+
+- non-force disarm requires positive ground evidence;
+- unknown ground/air state is rejected as ground_state_unknown / exit 5;
+- force arm is intentionally unsupported at CLI, RPC, adapter levels;
+- disarm --force is emergency motor stop only;
+- non-finite altitude and invalid timeout are exit 2;
+- mode map unavailable is exit 5, not internal error;
+- 149 non-SITL tests and 3 SITL tests passing.
+
+## 4. 创建 backlog GitHub issues
+
+创建以下 issue；不要在本轮实现：
+
+1. title:
+   feat(safety): evaluate ArduPilot EKF and pre-arm health guard
+
+   body:
+   mavctl currently checks fresh link state, GPS fix, mode, armed state,
+   takeoff altitude, and command ACKs. ArduPilot pre-arm checks remain the
+   authoritative final safety gate. Investigate reliable MAVLink/ArduPilot
+   signals for EKF and pre-arm health before adding a configurable guard.
+
+2. title:
+   feat(status): expose freshness metadata for cached telemetry
+
+   body:
+   When the MAVLink heartbeat is stale, mavctl correctly suppresses volatile
+   flight state such as armed and mode. Battery/GPS/position may still be
+   cached values. Add per-stream timestamps or age fields, such as
+   telemetry_age_s, gps_age_s, and battery_age_s, to make stale observations
+   explicit to agents.
+
+3. title:
+   test(adapter): cover HOME_POSITION and EXTENDED_SYS_STATE source filtering
+
+   body:
+   Add focused adapter tests for HOME_POSITION and EXTENDED_SYS_STATE /
+   landed_state updates from the locked autopilot and rejection of foreign
+   system/component messages.
+
+## 5. 停止并汇报
+
+最后只汇报：
+
+- 新 commit SHA 与 message；
+- PR #2 / PR #3 URL、base/head、状态；
+- 新建 issue URL；
+- 最终 git status；
+- ruff / mypy / pytest 非 SITL / SITL 结果；
+- 不要 merge、不要 rebase、不要 tag。
