@@ -1,0 +1,27 @@
+不要修改文件，不要 commit、push、merge、rebase、tag，不要执行任何 mavctl
+状态变更命令。
+
+请原样输出当前 fix/command-transaction-safety 分支上的以下文件内容，
+不得使用省略号、摘要、“见工作区”或伪代码；若输出过长，请按 Part 1 / Part 2
+连续输出，确保函数不被截断：
+
+1. src/mavctl/daemon/guards.py
+2. src/mavctl/models/commands.py
+3. src/mavctl/models/state.py
+4. src/mavctl/adapter/base.py
+
+然后输出：
+
+5. src/mavctl/daemon/server.py，分为两段：
+   A. 文件开头到 _m_descent 结束；
+   B. _not_connected 开始到文件结尾。
+
+6. src/mavctl/adapter/pymavlink_adapter.py，分为三段：
+   A. 文件开头到所有公开 command 方法（arm/disarm/set_mode/takeoff/land/rtl）结束；
+   B. _send_command 开始到 _mode_mapping 结束；
+   C. _read_loop 开始到文件结尾。
+
+最后只输出当前 HEAD 和 origin/main 的 commit SHA：
+
+git rev-parse HEAD
+git rev-parse origin/main
