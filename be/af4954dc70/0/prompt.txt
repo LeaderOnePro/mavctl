@@ -1,0 +1,54 @@
+TestPyPI rehearsal 已由我手动完成并成功，但 API token 不得出现在任何
+代码、文档、Git history、workflow、shell script 或输出中。
+
+请创建分支：
+
+docs/testpypi-rehearsal
+
+不要修改飞控实现、CLI、Skill、PyPI publish workflow 或 package version；
+不要上传任何包、不要运行 uv publish、不要创建 tag、不要执行飞行控制命令。
+
+## 更新 docs/PUBLISHING.md
+
+在合适位置增加一个简短的 “TestPyPI rehearsal record” 小节，记录：
+
+- TestPyPI rehearsal completed successfully on 2026-08-26；
+- tested package version: `0.2.0.dev0`；
+- both wheel and sdist uploaded successfully to TestPyPI；
+- a clean temporary virtual environment installed
+  `mavctl==0.2.0.dev0` from TestPyPI with dependencies resolved from PyPI；
+- smoke checks passed:
+  - `mavctl --help`
+  - `mavctl daemon --help`
+- this does NOT mean mavctl has been released on production PyPI；
+- TestPyPI does not permit re-uploading the same version, so a future
+  rehearsal needs a new version such as `0.2.0.dev1`.
+
+Do not include:
+- API token;
+- account identifiers beyond public package/project name;
+- local filesystem paths;
+- terminal output copied verbatim.
+
+## Add a documentation test
+
+Extend tests/test_project_docs.py so it verifies:
+
+- docs/PUBLISHING.md still says production PyPI is not yet published;
+- TestPyPI rehearsal record contains 0.2.0.dev0;
+- docs/PUBLISHING.md contains no likely token patterns, at minimum:
+  - `pypi-`
+  - `UV_PUBLISH_PASSWORD=`
+  - `UV_PUBLISH_USERNAME=__token__` followed by a literal token value;
+- README continues to describe PyPI installation as not currently available.
+
+Run:
+
+uv run ruff check .
+uv run mypy .
+uv run pytest -m "not sitl"
+
+Do not run SITL; docs/tests only.
+
+Stop and report changed files, tests, and gate results.
+Do not commit, push, merge, tag, or publish.
