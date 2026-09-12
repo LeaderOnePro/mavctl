@@ -1,0 +1,78 @@
+做得很好。接下来按顺序执行三件事：
+
+## 1. 合并 PR
+
+合并 PR #1 到 main（squash merge），并打 tag `v0.1.0-phase1`。
+
+## 2. 更新 CLAUDE.md
+
+在「铁律」部分追加以下三条设计原则，并在后续所有开发中贯彻：
+
+- **异步操作语义**：所有会改变载具状态且需要时间完成的命令
+  （takeoff / land / rtl / mode 等）必须支持两种模式：
+  - 默认：发出指令并确认飞控 ACK 后立即返回
+  - `--wait`：阻塞直到目标状态达成（如到达目标高度、完成降落），
+    配套 `--timeout <秒>`（默认 60），超时返回退出码 6
+- **status 输出自描述**：`mavctl status` 的输出必须让 agent 单次查询
+  就能重建对载具的完整认知，至少包含：connected、armed、mode、
+  system_status、relative_alt、landed_state（若可用）、battery、
+  gps_fix、home_position（若已设置）
+- **幂等友好**：重复执行已达成的状态变更应返回成功而非报错
+  （如对已 armed 的载具执行 arm，返回 exit 0 并在输出中标注
+  "already armed"），确保 agent 重试时不被绊倒
+
+## 3. 实现 Phase 2：飞行控制命令 + 安全护栏
+
+新建分支 feat/flight-control 开发，完成后开 PR。
+
+### 目标命令
+
+  mavctl arm --confirm [--dry-run]
+  mavctl disarm --confirm [--dry-run] [--force]
+  mavctl mode <MODE> --confirm [--wait] [--timeout N]
+  mavctl takeoff --alt <米> --confirm [--wait] [--timeout N] [--dry-run]
+  mavctl land --confirm [--wait] [--timeout N]
+  mavctl rtl --confirm [--wait] [--timeout N]
+
+### 安全护栏框架（mavctl/daemon/guards.py）
+
+实现一个可扩展的护栏检查器，在 daemon 执行危险命令前依次检查：
+
+1. **确认检查**：无 --confirm 直接拒绝（退出码 5），错误信息说明
+   这是危险操作及正确用法
+2. **前置状态检查**：
+   - arm：GPS fix 达标（3D fix 以上）、EKF 就绪（能拿到则查）、
+     未处于 armed 状态时才真正执行（幂等原则）
+   - takeoff：必须已 armed 且处于 GUIDED 模式（不满足时错误信息
+     要告诉 agent 正确的命令顺序）；--alt 超过高度上限
+     （默认 120m，可配置）则拒绝
+   - disarm：飞行中（非 landed）拒绝，除非 --force
+3. **--dry-run**：跑完所有护栏检查后输出「将会执行什么 + 检查结果」
+   但不实际执行，退出码反映检查是否通过
+
+护栏拒绝时的 JSON 错误输出必须包含：reason（机器可读代码）、
+message（人类可读）、hint（告诉 agent 下一步该做什么）。
+
+### Adapter 层扩展
+
+VehicleAdapter 接口新增：arm() / disarm() / set_mode() / takeoff() /
+land() / rtl()，pymavlink 实现注意：
+- 命令用 COMMAND_LONG 发送，等待 COMMAND_ACK，超时（默认 5s）重发
+  最多 3 次，最终失败返回退出码 6
+- set_mode 用 ArduPilot 的 custom mode 编号（从 mavutil 的
+  mode_mapping 获取），不要硬编码
+- --wait 的达成判定：takeoff 为 relative_alt ≥ 目标高度的 95%；
+  land/rtl 为 disarmed；mode 为 heartbeat 中模式已切换
+
+### 测试
+
+- guards 单元测试：每条护栏规则的通过/拒绝路径
+- adapter 单测：mock ACK 超时/重发/NACK 场景
+- @pytest.mark.sitl 集成测试：完整流程
+  mode guided → arm → takeoff 10 → 等待到高 → rtl → 等待落地上锁
+
+### 验收
+
+完成后运行门禁（ruff + mypy + pytest -m "not sitl"），然后给我
+一份 SITL 手动验收步骤（包含每条命令的预期输出和退出码，
+以及故意触发护栏拒绝的反例测试）。
