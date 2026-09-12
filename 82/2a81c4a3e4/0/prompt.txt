@@ -1,0 +1,128 @@
+那个文件实在太长了，优化一下，为一次最终 Phase 2 review 建立审查索引。
+
+严格要求：
+- 只读分析；
+- 不修改任何文件；
+- 不运行会改变飞控状态的 mavctl 命令；
+- 不 commit、push、merge、rebase、tag；
+- 可以运行 git、ruff、mypy、pytest 等只读/测试命令；
+- 如 SITL 未运行，不要自行启动它。
+
+请执行以下任务，并将结果重新写入 md 文件。
+
+# 1. Git 与发布状态
+
+记录并解释以下命令结果：
+
+git status --short
+git branch --show-current
+git remote -v
+git tag --sort=-creatordate
+git log --graph --oneline --decorate --all -60
+git show --stat v0.1.0-phase1
+git diff --stat origin/main...HEAD
+git diff --name-status origin/main...HEAD
+git log --oneline origin/main..HEAD
+
+如果本地存在以下分支，也记录其 HEAD、与 main 的关系、包含关系：
+
+- main
+- feat/flight-control
+- fix/command-transaction-safety
+
+使用 merge-base / log 确认，而不是猜测。
+
+# 2. 阶段状态表
+
+创建一个表格，至少包含：
+
+| 阶段 | 目标 | 实现状态 | Git 分支/PR 状态 | 测试状态 | 已知风险/待办 |
+
+必须覆盖：
+
+- Phase 1：daemon/status/telemetry
+- Phase 2 基础飞控：arm/disarm/mode/takeoff/land/rtl/guards
+- Phase 2 transaction safety：command lock、ACK source filtering、
+  target locking、link-loss during wait、IN_PROGRESS、ACK quarantine
+- Agent Skill
+- PyPI 发布准备
+- Phase 3 mission protocol
+
+# 3. 架构图与关键调用链
+
+使用 ASCII 图说明当前实际架构及目录：
+
+CLI → daemon client → Unix socket RPC → DaemonServer → guards → adapter → pymavlink
+
+然后针对以下危险命令分别写出真实调用链和关键文件/函数名：
+
+- arm
+- disarm
+- mode
+- takeoff
+- land
+- rtl
+
+必须明确：
+- --confirm 在哪里被检查；
+- --dry-run 在哪里终止执行；
+- connected 在哪里检查；
+- --wait 在哪里处理；
+- exit 4 / 5 / 6 分别从哪里产生；
+- COMMAND_ACK 在哪里接收和匹配；
+- 哪些锁保护 daemon 命令事务、哪些锁保护 adapter MAVLink 事务。
+
+# 4. 文件风险清单
+
+列出 src/ 和 tests/ 下所有 Python 文件，但按风险分层：
+
+- P0 / 飞行安全与协议正确性：
+  guards、pymavlink adapter、DaemonServer、RPC 参数边界等
+- P1 / 可靠性和 daemon 生命周期：
+  process、client、wire、paths 等
+- P2 / CLI、models、文档、测试辅助代码
+
+每个文件写：
+- 职责；
+- 是否由 Phase 2 修改；
+- 是否值得人工逐行 review；
+- 关联测试文件。
+
+# 5. 测试盘点
+
+运行：
+
+uv run ruff check .
+uv run mypy .
+uv run pytest -m "not sitl"
+
+记录完整结果摘要和 exit code。
+
+不要自行跑 SITL 测试，除非检测到 SITL 已经运行且不会影响已有飞行器；
+即使运行，也只能运行 pytest -m sitl，不能执行额外飞行控制命令。
+
+列出每一个测试文件的职责，以及它覆盖的关键安全场景：
+- 未 confirm
+- GPS 未就绪
+- 不在 GUIDED / 未 armed 时 takeoff
+- 空中 disarm
+- 并发 command
+- ACK source
+- target locking
+- telemetry source filtering
+- stale / late ACK
+- wait timeout
+- wait 中断链
+- SITL 完整飞行流
+
+明确列出“看起来尚未覆盖”的安全场景，但不要自行修改测试。
+
+# 6. 当前 review 建议
+
+最后给出：
+1. 为最终人工 review，最值得优先阅读的 6~10 个文件；
+2. 每个文件要看的具体函数；
+3. 当前是否建议合并 PR #2 / PR #3；
+4. 若不能判断，说明缺少什么证据。
+
+不要做代码修改，不要提出未经代码验证的结论。
