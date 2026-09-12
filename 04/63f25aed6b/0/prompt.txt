@@ -1,0 +1,120 @@
+Skill v1 已通过最终人工 review。现在完成提交、PR、合并和 main 回归验证。
+
+严格要求：
+- 只处理 feat/agent-skill 分支及其 PR；
+- 不修改飞控实现、guards、adapter、daemon 或 CLI；
+- 不运行任何真实 mavctl 飞行控制命令；
+- 不打 release tag；
+- 不开始 PyPI 发布、README 大改或 Phase 3；
+- 若门禁失败，停止并汇报，不要 merge。
+
+## 1. 最终提交前验证
+
+确认当前分支是 feat/agent-skill，然后执行：
+
+git status --short
+git diff --check
+uv run ruff check .
+uv run mypy .
+uv run pytest -m "not sitl"
+
+确认未跟踪内容仅为：
+
+- skills/mavctl-flight/
+- tests/test_skill_docs.py
+
+若还有其他文件，停止并汇报。
+
+## 2. 提交
+
+将以下内容加入 Git：
+
+- skills/mavctl-flight/SKILL.md
+- skills/mavctl-flight/references/workflows.md
+- skills/mavctl-flight/references/safety.md
+- skills/mavctl-flight/references/troubleshooting.md
+- tests/test_skill_docs.py
+
+提交信息使用：
+
+feat(skill): add safe mavctl flight-control guidance for agents
+
+提交后输出：
+
+git show --stat --oneline HEAD
+git status --short
+
+## 3. 推送与创建 PR
+
+推送：
+
+git push -u origin feat/agent-skill
+
+创建 PR：
+
+main <- feat/agent-skill
+
+PR 标题：
+
+feat(skill): add safe mavctl flight-control guidance for agents
+
+PR 描述应包含：
+
+### Scope
+- Added portable `mavctl-flight` agent Skill.
+- Added concise Skill entrypoint plus progressive-disclosure references:
+  workflows, safety, troubleshooting.
+- Added documentation-consistency tests.
+
+### Safety guidance encoded
+- Confirm / dry-run workflow.
+- GUIDED → arm → status confirms armed=true → takeoff.
+- Arm ACK may precede heartbeat state.
+- Normal ending uses RTL / land, not disarm.
+- `disarm --force` is emergency motor stop only.
+- `arm --force` is unsupported.
+- Exit 4/5/6 recovery guidance.
+- `ground_state_unknown` and `link_lost_during_wait`.
+
+### Validation
+- ruff passed.
+- mypy strict passed.
+- pytest -m "not sitl": 163 passed.
+- No flight-control implementation changed.
+- No SITL run required because this PR contains docs/tests only.
+
+## 4. Merge
+
+确认 PR 状态为 CLEAN / MERGEABLE 后，使用 squash merge：
+
+feat/agent-skill → main
+
+建议 squash commit message：
+
+feat(skill): add safe mavctl flight-control guidance for agents
+
+合并后：
+
+git switch main
+git pull --ff-only origin main
+git status --short
+git log --graph --oneline --decorate -15
+
+然后在 main 上运行：
+
+uv run ruff check .
+uv run mypy .
+uv run pytest -m "not sitl"
+
+不要运行 SITL 测试；本 PR 不改飞控逻辑。
+
+## 5. 最终汇报
+
+只汇报：
+
+1. Skill PR URL 和最终状态；
+2. squash merge commit SHA；
+3. main 当前 HEAD SHA；
+4. main 上 ruff / mypy / pytest 非 SITL 结果；
+5. git status --short；
+6. 确认没有 tag、PyPI 发布、Phase 3 或飞控实现改动。
