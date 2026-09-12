@@ -1,0 +1,106 @@
+TestPyPI rehearsal record 已通过 review。现在完成提交、PR 和合并。
+
+严格要求：
+- 只处理 docs/testpypi-rehearsal；
+- 不修改飞控实现、CLI、Skill、publish workflow、package version；
+- 不运行 uv publish、任何 PyPI 上传或 mavctl 飞行控制命令；
+- 不创建 tag；
+- 不开始 Phase 3。
+
+## 1. 最终验证
+
+确认当前分支为：
+
+docs/testpypi-rehearsal
+
+运行：
+
+git status --short
+git diff --check
+uv run ruff check .
+uv run mypy .
+uv run pytest -m "not sitl"
+
+确认修改仅限：
+
+- docs/PUBLISHING.md
+- tests/test_project_docs.py
+
+## 2. Commit
+
+提交信息：
+
+docs: record successful TestPyPI rehearsal
+
+提交后输出：
+
+git show --stat --oneline HEAD
+git status --short
+
+## 3. Push and PR
+
+推送：
+
+git push -u origin docs/testpypi-rehearsal
+
+创建 PR：
+
+main <- docs/testpypi-rehearsal
+
+PR 标题：
+
+docs: record successful TestPyPI rehearsal
+
+PR 描述：
+
+### Scope
+- Recorded successful TestPyPI rehearsal for `mavctl==0.2.0.dev0`.
+- Documented wheel/sdist upload and clean-venv CLI smoke checks.
+- Added publishing-document consistency and token-leak prevention tests.
+
+### Security
+- No token, account credential, local path, or raw terminal output is recorded.
+- Production PyPI remains unpublished.
+- Package version and publish workflow are unchanged.
+
+### Validation
+- ruff passed.
+- mypy strict passed.
+- pytest -m "not sitl": 176 passed.
+- No SITL or flight-control action was performed.
+
+## 4. Merge
+
+确认 PR CLEAN / MERGEABLE 后，squash merge：
+
+docs/testpypi-rehearsal → main
+
+建议 squash commit message：
+
+docs: record successful TestPyPI rehearsal
+
+合并后：
+
+git switch main
+git pull --ff-only origin main
+git status --short
+git log --graph --oneline --decorate -15
+
+运行：
+
+uv run ruff check .
+uv run mypy .
+uv run pytest -m "not sitl"
+
+不要运行 SITL，不要 build，不要 publish，不要 tag。
+
+## 5. Final report
+
+汇报：
+
+1. PR URL / status；
+2. squash merge SHA；
+3. main HEAD；
+4. main 上 ruff / mypy / pytest 结果；
+5. git status；
+6. 明确确认：生产 PyPI 未发布、版本仍为 0.2.0.dev0、无新 tag、未开始 Phase 3。
