@@ -1,0 +1,22 @@
+{
+  "cli_version": "0.8.42",
+  "checkpoint_id": "14cfb536df0d",
+  "session_id": "b6de80a6-34b1-47ab-84b2-3733974d4a3e",
+  "strategy": "import",
+  "created_at": "2026-08-25T20:10:31.47Z",
+  "checkpoints_count": 1,
+  "files_touched": null,
+  "agent": "Claude Code",
+  "model": "nvidia/nemotron-3-super-120b-a12b:free",
+  "checkpoint_transcript_start": 89,
+  "transcript_lines_at_start": 89,
+  "compact_transcript_start": 21,
+  "token_usage": {
+    "input_tokens": 255699,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 152218,
+    "output_tokens": 1703,
+    "api_call_count": 10
+  },
+  "kind": "imported"
+}
