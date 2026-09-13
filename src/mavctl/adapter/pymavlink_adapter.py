@@ -57,6 +57,7 @@ _SUBSCRIBED = (
     "COMMAND_ACK",
     "EXTENDED_SYS_STATE",
     "HOME_POSITION",
+    "MISSION_REQUEST",
     "MISSION_REQUEST_LIST",
     "MISSION_COUNT",
     "MISSION_CLEAR_ALL",
@@ -71,6 +72,7 @@ _SUBSCRIBED = (
 # MISSION_CURRENT / MISSION_ITEM_REACHED are subscribed for completeness but
 # intentionally unused by the Phase 3A transactions.
 _MISSION_TRANSACTION_TYPES = frozenset({
+    "MISSION_REQUEST",
     "MISSION_REQUEST_LIST",
     "MISSION_COUNT",
     "MISSION_CLEAR_ALL",
@@ -429,7 +431,11 @@ class PymavlinkAdapter:
             return MissionStateUncertainError(message, sent_upto=sent_upto)
 
         def accept_request_or_ack(msg_type: str, msg: Any) -> bool:
-            if msg_type not in ("MISSION_REQUEST_INT", "MISSION_ACK"):
+            # ArduPilot paces uploads with the FLOAT MISSION_REQUEST message
+            # (MissionItemProtocol::queued_request_send never sends
+            # MISSION_REQUEST_INT in the upload direction) — accept either
+            # transport; both carry the same seq semantics.
+            if msg_type not in ("MISSION_REQUEST_INT", "MISSION_REQUEST", "MISSION_ACK"):
                 return False
             return getattr(msg, "mission_type", MISSION_TYPE_MISSION) == MISSION_TYPE_MISSION
 
@@ -890,12 +896,42 @@ class PymavlinkAdapter:
     # -- mission session plumbing ------------------------------------------
 
     def _begin_mission_session(self) -> None:
-        """Activate mission message delivery; drop any stale traffic."""
+        """Activate mission message delivery; drop any stale traffic.
+
+        Also (re)requests the POSITION telemetry stream: mission operations
+        are only allowed on the ground with fresh evidence, and operators
+        inspecting the plan need current position context. On links without
+        a full GCS (e.g. SITL without MAVProxy) this is what makes
+        ``telemetry`` useful at all; on links where a GCS already requests
+        streams this is a harmless duplicate.
+        """
 
         with self._mission_cond:
             self._session_seq += 1
             self._mission_active = True
             self._mission_inbox.clear()
+        master = self._master
+        if master is not None:
+            # Modern ArduPilot ignores the deprecated REQUEST_DATA_STREAM
+            # message; MAV_CMD_SET_MESSAGE_INTERVAL (511) is the supported
+            # way to keep GLOBAL_POSITION_INT flowing. Best effort: if the
+            # vehicle rejects it the mission transaction still works — only
+            # the operator's position context is degraded, and the
+            # remote_mission_state_uncertain read-back hint covers ops.
+            with contextlib.suppress(Exception), self._send_lock:
+                master.mav.command_long_send(
+                    self._target_system,
+                    self._target_component,
+                    mavutil.mavlink.MAV_CMD_SET_MESSAGE_INTERVAL,
+                    0,  # confirmation
+                    float(mavutil.mavlink.MAVLINK_MSG_ID_GLOBAL_POSITION_INT),
+                    500000.0,  # 2 Hz in microseconds
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                )
 
     def _end_mission_session(self) -> None:
         """Deactivate delivery and clear the inbox."""

@@ -363,9 +363,20 @@ uv run mavctl daemon stop
 
 ## 8g. Phase 3A mission 协议验收（计划——尚未运行）
 
-mission upload / download / clear 已实现并通过 mock 协议测试，但 **SITL
-验收尚未执行**；以下为既定验收步骤（全部为非执行类操作：不起飞、不切
-AUTO、不发送 mission start）：
+mission upload / download / clear 已实现并通过 mock 协议测试。SITL 验收
+必须在**专用的无带内 GCS 实例**上运行：
+
+```bash
+sim_vehicle.py -v ArduCopter --instance 1 --no-mavproxy --no-rebuild
+# SERIAL0 tcp:127.0.0.1:5770；测试经 MAVCTL_SITL_CONNECT 指向它
+MAVCTL_SITL_CONNECT=tcp:127.0.0.1:5770 uv run pytest tests/test_mission_sitl.py -m sitl
+```
+
+`[FACT]`（SITL 实测）：共享 sim_vehicle 默认链路（带 MAVProxy，sysid 255
+与 mavctl 相同）时，MAVProxy 的 mission 模块会竞争上传——观察到成对的
+`MISSION_REQUEST` 重发与 2 项后的提前 `INVALID_SEQUENCE` ACK。upload /
+download / clear 已实现并通过 mock 协议测试；以下为既定验收步骤（全部为
+非执行类操作：不起飞、不切 AUTO、不发送 mission start）：
 
 ```bash
 uv run mavctl daemon start --connect udp:127.0.0.1:14550
