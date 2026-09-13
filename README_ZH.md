@@ -54,6 +54,9 @@ mavctl mode <MODE>
 mavctl takeoff --alt <米>
 mavctl land
 mavctl rtl
+mavctl mission upload <mission.json> --confirm [--dry-run]
+mavctl mission download [--output <mission.json>] [--json]
+mavctl mission clear --confirm [--dry-run]
 ```
 
 横切行为：
@@ -66,6 +69,10 @@ mavctl rtl
 | `--wait --timeout <秒>` | 阻塞直到目标状态达成（默认 60 秒） |
 | 幂等重复 | 重复执行已达成的变更返回成功（"already armed"） |
 | 事务安全 | ACK/NACK 处理、命令串行化、失链中止 |
+
+mission upload/download/clear 已实现并由 mock 协议测试覆盖；mission 协议的
+SITL 验收尚未运行，在此之前请将该 mission 接口视为仅经 mock 验证。目前没有
+mission start/execution 命令。
 
 未实现——仅描述当前范围，不是路线图承诺：
 

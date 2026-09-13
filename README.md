@@ -58,6 +58,9 @@ mavctl mode <MODE>
 mavctl takeoff --alt <metres>
 mavctl land
 mavctl rtl
+mavctl mission upload <mission.json> --confirm [--dry-run]
+mavctl mission download [--output <mission.json>] [--json]
+mavctl mission clear --confirm [--dry-run]
 ```
 
 Cross-cutting behaviour:
@@ -70,6 +73,11 @@ Cross-cutting behaviour:
 | `--wait --timeout <s>` | block until the target state is reached (default 60 s) |
 | idempotent repeats | re-applying an achieved change succeeds ("already armed") |
 | transaction safety | ACK/NACK handling, serialized commands, link-loss abort |
+
+Mission upload/download/clear are implemented and covered by mock protocol
+tests; SITL acceptance for the mission protocol is still pending, so treat
+the mission surface as pre-validated-only until then. There is no mission
+start/execution command yet.
 
 Not implemented — current scope only, not a roadmap promise:
 

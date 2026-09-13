@@ -21,13 +21,14 @@ _WORKFLOW = (_ROOT / ".github" / "workflows" / "publish.yml").read_text(encoding
 _SKILLS_ACCEPTANCE = (_ROOT / "docs" / "SKILLS_CLI_ACCEPTANCE.md").read_text(encoding="utf-8")
 
 _SUPPORTED_COMMANDS = frozenset(
-    {"status", "telemetry", "arm", "disarm", "mode", "takeoff", "land", "rtl", "daemon"}
+    {"status", "telemetry", "arm", "disarm", "mode", "takeoff", "land", "rtl",
+     "daemon", "mission"}
 )
 
 _MAVCTL_INVOCATION = re.compile(r"mavctl\s+([A-Za-z][A-Za-z0-9_-]*)")
 # Unimplemented capabilities may be *named* as bare words, never invoked.
 _UNSUPPORTED_INVOCATION = re.compile(
-    r"mavctl\s+(mission|geofence|fence|rally|params?)\b", re.IGNORECASE
+    r"mavctl\s+(geofence|fence|rally|params?)\b", re.IGNORECASE
 )
 _FORCE_ARM_INVOCATION = re.compile(r"mavctl\s+arm\b[^\n]*--force", re.IGNORECASE)
 
@@ -102,6 +103,16 @@ def test_readme_never_invokes_unimplemented_capabilities() -> None:
 def test_readme_never_shows_a_force_arm_invocation() -> None:
     match = _FORCE_ARM_INVOCATION.search(_README)
     assert match is None, f"README: {match.group(0)!r}"
+
+
+def test_readme_states_mission_surface_is_mock_validated_only() -> None:
+    # Phase 3A honesty gate: mission commands are documented as implemented,
+    # but the READMEs must say SITL acceptance has not run yet and that there
+    # is no mission execution command.
+    for readme in (_README, _ZH_README):
+        assert "mission upload" in readme
+        assert "mock" in readme.lower()
+        assert "SITL" in readme
 
 
 def test_readme_quickstart_covers_the_safe_workflow() -> None:

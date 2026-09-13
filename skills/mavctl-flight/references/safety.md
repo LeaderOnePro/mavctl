@@ -83,6 +83,22 @@ ground/air judgement and marks the audit trail accordingly. Use it only for
 an intentional emergency stop (e.g. runaway ground behaviour), never as a
 landing procedure.
 
+## Mission upload / clear / download
+
+`mission upload` and `mission clear` are state-changing and follow the full
+dangerous-command path: `--confirm` required, fresh link, vehicle
+**disarmed** with **fresh positive ground evidence** (`mission_requires_disarmed`,
+`ground_state_stale`, `ground_state_unknown` otherwise). `--dry-run` runs the
+same checks and sends zero MAVLink traffic. Uploads of more than 100 items or
+items above the altitude ceiling are rejected.
+
+`mission download` is read-only: fresh link only, no confirmation.
+
+An upload timeout can leave the remote mission state **uncertain** — the
+response carries reason `remote_mission_state_uncertain` (exit 6); always
+re-check with `mavctl mission download` before trusting anything. There is no
+mission start/execution command: uploading never flies the vehicle.
+
 ## Altitude limits
 
 `takeoff` requires a finite positive altitude (exit 2 `invalid_altitude`

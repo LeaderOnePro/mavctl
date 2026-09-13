@@ -361,6 +361,32 @@ uv run mavctl rtl --confirm --dry-run   # 期望：exit 4 / not_connected
 uv run mavctl daemon stop
 ```
 
+## 8g. Phase 3A mission 协议验收（计划——尚未运行）
+
+mission upload / download / clear 已实现并通过 mock 协议测试，但 **SITL
+验收尚未执行**；以下为既定验收步骤（全部为非执行类操作：不起飞、不切
+AUTO、不发送 mission start）：
+
+```bash
+uv run mavctl daemon start --connect udp:127.0.0.1:14550
+# 1. 上传四项任务：TAKEOFF 10m → WAYPOINT A → WAYPOINT B → RTL
+uv run mavctl mission upload mission.json --confirm
+# 2. 下载并核对语义 JSON 等价
+uv run mavctl mission download --json
+# 3. 清除并读回验证 count == 0
+uv run mavctl mission clear --confirm
+# 4. 重新上传（覆盖路径）
+uv run mavctl mission upload mission.json --confirm
+uv run mavctl daemon stop
+```
+
+超时/不确定路径（`remote_mission_state_uncertain`，exit 6）仅能在受控
+harness 中验证（见 docs/design/mission-protocol-v1.md §I）。
+
+```bash
+uv run mavctl daemon stop
+```
+
 ## 9. 退出码总表
 
 | 退出码 | 含义 |
