@@ -172,6 +172,26 @@ async def test_mission_upload_uncertain_maps_to_exit_6() -> None:
     assert "internal" not in (response.error.message or "").lower()
 
 
+async def test_mission_upload_sequence_gap_surfaces_expected_and_requested() -> None:
+    error = MissionStateUncertainError("future item requested", accepted_upto=0)
+    error.expected_seq = 1  # type: ignore[attr-defined]
+    error.requested_seq = 2  # type: ignore[attr-defined]
+    adapter = _ScriptedMissionAdapter(_grounded_state(), error=error)
+    server = DaemonServer(adapter, "udp:127.0.0.1:14550")
+    response = await server._dispatch(
+        _params(method="mission_upload", mission=_mission_payload(), confirm=True)
+    )
+    assert response.ok is False
+    assert response.error is not None
+    assert response.error.code == ExitCode.NACK_TIMEOUT
+    assert response.error.detail["reason"] == "remote_mission_state_uncertain"
+    assert response.error.detail["expected_seq"] == 1
+    assert response.error.detail["requested_seq"] == 2
+    assert response.error.detail["hint"] == (
+        "verify the remote mission with 'mavctl mission download'"
+    )
+
+
 async def test_mission_upload_rejection_maps_to_exit_6() -> None:
     error = MissionProtocolError("no space", result_name="NO_SPACE")
     adapter = _ScriptedMissionAdapter(_grounded_state(), error=error)
@@ -274,6 +294,10 @@ async def test_mission_clear_uncertain_includes_observed_count() -> None:
     assert response.error.code == ExitCode.NACK_TIMEOUT
     assert response.error.detail["reason"] == "remote_mission_state_uncertain"
     assert response.error.detail["observed_count"] == 2
+    # P1: the message names the clear operation, never the upload
+    assert "mission_clear" in (response.error.message or "")
+    assert "mission_clear uncertain" in (response.error.message or "")
+    assert "mission_upload" not in (response.error.message or "")
 
 
 async def test_unexpected_mission_exception_still_internal_error() -> None:

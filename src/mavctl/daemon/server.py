@@ -185,10 +185,16 @@ class DaemonServer:
             detail["accepted_upto"] = exc.accepted_upto
         if exc.observed_count is not None:
             detail["observed_count"] = exc.observed_count
-        if action == "mission_clear" and exc.observed_count is not None:
+        expected_seq = getattr(exc, "expected_seq", None)
+        requested_seq = getattr(exc, "requested_seq", None)
+        if expected_seq is not None:
+            detail["expected_seq"] = expected_seq
+        if requested_seq is not None:
+            detail["requested_seq"] = requested_seq
+        if action == "mission_clear":
             message = (
-                f"mission clear uncertain; remote mission count observed: "
-                f"{exc.observed_count}"
+                f"mission_clear uncertain; "
+                f"remote mission count observed: {exc.observed_count}"
             )
         else:
             message = f"{action} outcome uncertain; remote mission state must be verified"
@@ -278,7 +284,7 @@ class DaemonServer:
             try:
                 outcome = await self._blocking_mission(self._adapter.clear_mission)
             except MissionStateUncertainError as exc:
-                return self._mission_uncertain(exc, "mission_upload")
+                return self._mission_uncertain(exc, "mission_clear")
             except MissionProtocolError as exc:
                 return self._mission_rejected(exc)
         return DaemonResponse.success(outcome.model_dump())

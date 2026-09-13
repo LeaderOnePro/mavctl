@@ -20,7 +20,7 @@ from mavctl.adapter.base import (
     MissionProtocolError,
     MissionStateUncertainError,
 )
-from mavctl.adapter.pymavlink_adapter import PymavlinkAdapter
+from mavctl.adapter.pymavlink_adapter import PymavlinkAdapter, _MissionSequenceGapError
 from mavctl.models import DownloadedMissionV1, MissionV1
 from tests.fakes import FakeMaster, FakeMsg
 
@@ -196,22 +196,30 @@ def test_upload_single_item_mission() -> None:
     assert _item_seqs(master) == [0]
 
 
-def test_upload_duplicate_request_resends_same_item(fast_timeouts: None) -> None:
+def test_upload_duplicate_request_resends_without_advancing(
+    fast_timeouts: None,
+) -> None:
     adapter, master = _adapter()
     runner = _Runner(lambda: adapter.upload_mission(_mission(2)))
     runner.start()
     assert _wait_until(lambda: len(_sent(master, "MISSION_COUNT")) >= 1)
+    # request 0 → send 0
     adapter._handle_message(_msg("MISSION_REQUEST_INT", seq=0, mission_type=0))
     assert _wait_until(lambda: _item_seqs(master) == [0])
+    # request 0 again (packet loss of the item) → resend 0, no advance
     adapter._handle_message(_msg("MISSION_REQUEST_INT", seq=0, mission_type=0))
     assert _wait_until(lambda: _item_seqs(master) == [0, 0])
+    # a third duplicate is still answered with item 0
+    adapter._handle_message(_msg("MISSION_REQUEST_INT", seq=0, mission_type=0))
+    assert _wait_until(lambda: _item_seqs(master) == [0, 0, 0])
+    # request 1 → send 1 (the expectation only advanced after item 0 was sent)
     adapter._handle_message(_msg("MISSION_REQUEST_INT", seq=1, mission_type=0))
-    assert _wait_until(lambda: _item_seqs(master) == [0, 0, 1])
+    assert _wait_until(lambda: _item_seqs(master) == [0, 0, 0, 1])
     adapter._handle_message(_msg("MISSION_ACK", type=0, mission_type=0))
     assert runner.join()
     assert runner.error is None
     assert _request_seqs(master) == []  # requests are injected by the vehicle
-    assert _item_seqs(master) == [0, 0, 1]
+    assert _item_seqs(master) == [0, 0, 0, 1]
 
 
 def test_upload_out_of_range_request_is_uncertain(fast_timeouts: None) -> None:
@@ -222,7 +230,51 @@ def test_upload_out_of_range_request_is_uncertain(fast_timeouts: None) -> None:
     adapter._handle_message(_msg("MISSION_REQUEST_INT", seq=99, mission_type=0))
     assert runner.join(timeout=10)
     assert isinstance(runner.error, MissionStateUncertainError)
+    assert isinstance(runner.error, _MissionSequenceGapError)
     assert _item_seqs(master) == []  # nothing sent for an invalid request
+    # the gap detail identifies both sides of the violation
+    assert runner.error.expected_seq == 0
+    assert runner.error.requested_seq == 99
+
+
+def test_upload_future_request_aborts_strict_sequence(fast_timeouts: None) -> None:
+    """request 0 → send 0; request 2 while expected 1 → no item 2 is sent,
+    the transaction aborts as uncertain with expected/requested detail, and
+    later stale requests cannot pollute a following transaction."""
+
+    adapter, master = _adapter()
+    runner = _Runner(lambda: adapter.upload_mission(_mission(4)))
+    runner.start()
+    assert _wait_until(lambda: len(_sent(master, "MISSION_COUNT")) >= 1)
+    adapter._handle_message(_msg("MISSION_REQUEST_INT", seq=0, mission_type=0))
+    assert _wait_until(lambda: _item_seqs(master) == [0])
+    adapter._handle_message(_msg("MISSION_REQUEST_INT", seq=2, mission_type=0))
+    assert runner.join(timeout=10)
+    assert isinstance(runner.error, _MissionSequenceGapError)
+    assert runner.error.expected_seq == 1
+    assert runner.error.requested_seq == 2
+    assert _item_seqs(master) == [0]  # item 2 was never sent
+
+    # stale requests after the abort are dropped (delivery inactive)…
+    adapter._handle_message(_msg("MISSION_REQUEST_INT", seq=2, mission_type=0))
+    assert _item_seqs(master) == [0]
+
+    # …and a fresh transaction starts clean: the second COUNT triggers a new
+    # session and the full ordered play succeeds again.
+    second = _Runner(lambda: adapter.upload_mission(_mission(4)))
+    second.start()
+    assert _wait_until(lambda: len(_sent(master, "MISSION_COUNT")) >= 2)
+    for seq in range(4):
+        adapter._handle_message(_msg("MISSION_REQUEST_INT", seq=seq, mission_type=0))
+
+        def item_once(expected: int = seq, _master: FakeMaster = master) -> bool:
+            return _item_seqs(_master).count(expected) == 1
+
+        assert _wait_until(item_once)
+    adapter._handle_message(_msg("MISSION_ACK", type=0, mission_type=0))
+    assert second.join()
+    assert second.error is None
+    assert second.result.accepted is True
 
 
 def test_upload_wrong_source_ignored(fast_timeouts: None) -> None:

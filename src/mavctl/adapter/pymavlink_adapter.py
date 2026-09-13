@@ -77,6 +77,26 @@ _MISSION_TRANSACTION_TYPES = frozenset({
     "MISSION_ACK",
 })
 
+class _MissionSequenceGapError(MissionStateUncertainError):
+    """The vehicle requested a future item (``seq > expected``): a strict
+    upload-ordering violation per the verified ArduPilot
+    ``MissionItemProtocol`` ``request_i`` handling ([FACT]: items arriving
+    out of order are answered ``MISSION_ACK(INVALID_SEQUENCE)``). The remote
+    mission state must be treated as uncertain and read back."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        expected_seq: int,
+        requested_seq: int,
+        accepted_upto: int | None = None,
+    ) -> None:
+        super().__init__(message, accepted_upto=accepted_upto)
+        self.expected_seq = expected_seq
+        self.requested_seq = requested_seq
+
+
 # Mission transaction tuning (docs/design/mission-protocol-v1.md §D/E; the
 # vehicle's own upload timer is 8 s — ArduPilot MissionItemProtocol).
 _MISSION_REQUEST_TIMEOUT_S = 1.0
@@ -376,12 +396,20 @@ class PymavlinkAdapter:
     def upload_mission(self, mission: MissionV1) -> MissionOutcome:
         """Run the MAVLink mission upload transaction for a validated plan.
 
-        Phase model (design §D): U0 failures happen before this method is
-        reached; from U1 (``MISSION_COUNT`` sent) onward every abort raises
-        :class:`MissionStateUncertainError` — the vehicle may hold a partial
-        mission. The vehicle paces the transfer via ``MISSION_REQUEST_INT``
-        and terminates with ``MISSION_ACK`` (sent immediately after the last
-        item per the ArduPilot source).
+        Request ordering follows the verified ArduPilot strict-sequence
+        protocol ([FACT] ``MissionItemProtocol.handle_mission_item``: an item
+        whose ``seq`` does not equal the vehicle's expected ``request_i`` is
+        answered ``MISSION_ACK(INVALID_SEQUENCE)``):
+
+        - ``seq == expected_next_seq``: send exactly that item, advance;
+        - ``seq < expected_next_seq``: re-send the already-sent item
+          (packet-loss / retry compatible; the expectation does not advance);
+        - ``seq > expected_next_seq``: future item — send nothing, abort with
+          :class:`_MissionSequenceGapError` (remote state uncertain).
+
+        Phase model (design §D): from ``MISSION_COUNT`` onward every abort
+        raises :class:`MissionStateUncertainError` — the vehicle may hold a
+        partial mission.
         """
         master = self._master
         if master is None:
@@ -390,6 +418,7 @@ class PymavlinkAdapter:
         count = len(items)
         overall = time.monotonic() + _MISSION_TRANSACTION_TIMEOUT_S
         accepted_upto: int | None = None
+        expected_next_seq = 0
 
         def uncertain(message: str) -> MissionStateUncertainError:
             return MissionStateUncertainError(message, accepted_upto=accepted_upto)
@@ -402,39 +431,9 @@ class PymavlinkAdapter:
         with self._mission_lock:
             self._begin_mission_session()
             try:
-                # U1: MISSION_COUNT sent, awaiting the first item request.
                 self._send_mission_count(master, count)
                 resends = 0
-                last_sent: int | None = None
-                while last_sent is None:
-                    until = min(overall, time.monotonic() + _MISSION_REQUEST_TIMEOUT_S)
-                    msg_type, msg = self._wait_mission(accept_request_or_ack, until)
-                    if msg is None:
-                        if time.monotonic() >= overall:
-                            raise uncertain("vehicle did not request mission items")
-                        resends += 1
-                        if resends > _MISSION_RETRIES:
-                            raise uncertain(
-                                "vehicle did not request mission items after retries"
-                            )
-                        self._send_mission_count(master, count)
-                        continue
-                    if msg_type == "MISSION_ACK":
-                        # The vehicle ended the session before any item was
-                        # stored; conservative uncertain after COUNT.
-                        result = int(msg.type)
-                        if result == 15:
-                            raise uncertain("vehicle cancelled the upload")
-                        raise uncertain(f"upload ended with {mission_result_name(result)}")
-                    seq = int(msg.seq)
-                    if seq < 0 or seq >= count:
-                        raise uncertain(f"vehicle requested out-of-range seq {seq}")
-                    self._send_mission_item(master, items[seq], seq)
-                    last_sent = seq
-                    resends = 0
-                # U2: item exchange. ArduPilot requests strictly in order but
-                # mavctl answers any in-range request and re-sends duplicates.
-                while last_sent < count - 1:
+                while expected_next_seq < count:
                     until = min(overall, time.monotonic() + _MISSION_REQUEST_TIMEOUT_S)
                     msg_type, msg = self._wait_mission(accept_request_or_ack, until)
                     if msg is None:
@@ -445,9 +444,17 @@ class PymavlinkAdapter:
                             raise uncertain(
                                 "vehicle stopped requesting mission items after retries"
                             )
-                        # Re-send the last item: the vehicle is waiting for the
-                        # seq it requested, which is the one we last sent.
-                        self._send_mission_item(master, items[last_sent], last_sent)
+                        # Stall recovery: the vehicle's request_i has not
+                        # advanced past the last item it confirmed, so re-send
+                        # that item (or COUNT before the first request).
+                        if expected_next_seq == 0:
+                            self._send_mission_count(master, count)
+                        else:
+                            self._send_mission_item(
+                                master,
+                                items[expected_next_seq - 1],
+                                expected_next_seq - 1,
+                            )
                         continue
                     if msg_type == "MISSION_ACK":
                         result = int(msg.type)
@@ -457,17 +464,37 @@ class PymavlinkAdapter:
                             f"unexpected mid-upload ACK {mission_result_name(result)}"
                         )
                     seq = int(msg.seq)
-                    if seq < 0 or seq >= count:
-                        raise uncertain(f"vehicle requested out-of-range seq {seq}")
+                    if seq >= count:
+                        raise _MissionSequenceGapError(
+                            f"vehicle requested out-of-range seq {seq} "
+                            f"(expected {expected_next_seq})",
+                            expected_seq=expected_next_seq,
+                            requested_seq=seq,
+                            accepted_upto=accepted_upto,
+                        )
+                    if seq > expected_next_seq:
+                        raise _MissionSequenceGapError(
+                            f"vehicle requested future seq {seq} "
+                            f"(expected {expected_next_seq}): strict upload "
+                            "ordering forbids sending items ahead of the "
+                            "vehicle's request sequence",
+                            expected_seq=expected_next_seq,
+                            requested_seq=seq,
+                            accepted_upto=accepted_upto,
+                        )
+                    # seq == expected: the expected item — send and advance.
+                    # seq < expected: duplicate request — re-send the
+                    # already-sent item without advancing (retry compatible).
                     self._send_mission_item(master, items[seq], seq)
+                    if seq == expected_next_seq:
+                        accepted_upto = seq
+                        expected_next_seq = seq + 1
                     resends = 0
-                    if seq > last_sent:
-                        accepted_upto = seq  # vehicle stored items 0..seq
-                    last_sent = max(last_sent, seq)
                 accepted_upto = count - 1
-                # U3: terminal ACK. The vehicle sends it immediately after the
-                # last item; keep listening until the overall deadline because
-                # its 8 s timer can still deliver OPERATION_CANCELLED.
+                # Terminal ACK. The vehicle sends it immediately after the last
+                # item; keep listening until the overall deadline because its
+                # 8 s timer can still deliver OPERATION_CANCELLED. Late
+                # in-order requests are answered politely.
                 while True:
                     until = min(overall, time.monotonic() + _MISSION_ACK_WINDOW_S)
                     msg_type, msg = self._wait_mission(accept_request_or_ack, until)
@@ -493,8 +520,6 @@ class PymavlinkAdapter:
                         )
                     seq = int(msg.seq)
                     if 0 <= seq < count:
-                        # Late request after the last item: answer politely and
-                        # keep waiting for the ACK.
                         self._send_mission_item(master, items[seq], seq)
             finally:
                 self._end_mission_session()
