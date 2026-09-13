@@ -21,6 +21,7 @@ from mavctl.models import (
     MissionTakeoff,
     MissionV1,
     MissionWaypoint,
+    UnsupportedRemoteMissionItem,
     mission_item_from_remote,
     mission_item_to_int_fields,
 )
@@ -324,6 +325,56 @@ def test_remote_unsupported_frame_rejected() -> None:
         mission_item_from_remote(
             seq=0, command=MISSION_COMMAND_WAYPOINT, frame=3,
             param1=0.0, param2=0.0, param3=0.0, param4=0.0, x=1, y=2, z=3.0,
+        )
+
+
+# -- lossless policy: v1-unexpressed non-default parameters --------------------
+
+
+def test_remote_waypoint_param3_nondefault_is_unsupported() -> None:
+    # pass radius (param3) is not expressed by the v1 schema; a non-default
+    # value cannot round-trip, so the item is unsupported.
+    with pytest.raises(UnsupportedRemoteMissionItem, match=r"seq 1.*pass radius"):
+        mission_item_from_remote(
+            seq=1, command=MISSION_COMMAND_WAYPOINT, frame=6,
+            param1=0.0, param2=0.0, param3=5.0, param4=0.0,
+            x=10000000, y=20000000, z=10.0,
+        )
+
+
+def test_remote_waypoint_param4_yaw_nondefault_is_unsupported() -> None:
+    with pytest.raises(UnsupportedRemoteMissionItem, match=r"seq 1.*yaw"):
+        mission_item_from_remote(
+            seq=1, command=MISSION_COMMAND_WAYPOINT, frame=6,
+            param1=0.0, param2=0.0, param3=0.0, param4=1.5,
+            x=10000000, y=20000000, z=10.0,
+        )
+
+
+def test_remote_land_precision_mode_nondefault_is_unsupported() -> None:
+    with pytest.raises(UnsupportedRemoteMissionItem, match=r"seq 2.*precision"):
+        mission_item_from_remote(
+            seq=2, command=MISSION_COMMAND_LAND, frame=6,
+            param1=0.0, param2=1.0, param3=0.0, param4=0.0,
+            x=10000000, y=20000000, z=0.5,
+        )
+
+
+def test_remote_takeoff_nondefault_params_are_unsupported() -> None:
+    with pytest.raises(UnsupportedRemoteMissionItem, match=r"seq 0.*takeoff parameters"):
+        mission_item_from_remote(
+            seq=0, command=MISSION_COMMAND_TAKEOFF, frame=6,
+            param1=7.0, param2=0.0, param3=0.0, param4=0.0,
+            x=0, y=0, z=10.0,
+        )
+
+
+def test_remote_rtl_nondefault_params_are_unsupported() -> None:
+    with pytest.raises(UnsupportedRemoteMissionItem, match=r"seq 3.*rtl parameters"):
+        mission_item_from_remote(
+            seq=3, command=MISSION_COMMAND_RETURN_TO_LAUNCH, frame=6,
+            param1=1.0, param2=0.0, param3=0.0, param4=0.0,
+            x=0, y=0, z=0.0,
         )
 
 

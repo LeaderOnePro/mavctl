@@ -345,6 +345,12 @@ a future item sent ahead of `request_i` would be answered
 | `seq == expected_next_seq` | send exactly `MISSION_ITEM_INT(seq)`; advance `expected_next_seq` |
 | `seq < expected_next_seq` (duplicate of an already-sent item) | re-send that already-sent item **without advancing** `expected_next_seq` — this explicit duplicate request is the **only** item re-send trigger; blind re-sends on timeout are forbidden (see the U2 row below) |
 | `seq > expected_next_seq` (future item / gap) | **send nothing; abort** → `remote_mission_state_uncertain` (exit 6) with `detail.expected_seq`, `detail.requested_seq` and `detail.sent_upto`; hint: verify with `mavctl mission download` |
+
+`[DECIDED]` `sent_upto` semantics: the highest sequence mavctl **locally sent**
+— **not** a sequence the vehicle confirmed storing. Vehicle acceptance is only
+implied by the *next* in-order `MISSION_REQUEST_INT`. `items_sent` counts the
+items mavctl has sent (expected-sequence sends; duplicate re-sends are not
+re-counted).
 | `seq >= N` (out of range) | same abort as the future-item row (a special case of the gap) |
 
 `[DECIDED]` GCS-side phases and behavior:
@@ -363,8 +369,10 @@ a future item sent ahead of `request_i` would be answered
 | `MISSION_ACK(MAV_MISSION_OPERATION_CANCELLED)` at any phase | the **vehicle** cancelled (its 8 s timer) → abort; phase-aware: U1 (nothing sent) → clean `mission_rejected`, U2/U3 (items stored) → `remote_mission_state_uncertain` (exit 6), hint: read-back |
 | non-ACCEPTED `MISSION_ACK` with **zero items sent** (U1) | clean `mission_rejected` (exit 6, result name + `items_sent: 0` in detail) — the vehicle stored nothing |
 | non-ACCEPTED `MISSION_ACK` with **items already sent** (U2/U3) | `remote_mission_state_uncertain` (exit 6) with `detail.result_name`, `detail.items_sent`, `detail.sent_upto`, hint: read-back — ArduPilot does **not** roll back accepted items on a later error ACK (`[FACT]`: items are written to the active mission as they are accepted) |
-| terminal ACK `MAV_MISSION_ACCEPTED` | success |
-| terminal ACK non-zero (`NO_SPACE`, `INVALID_SEQUENCE`, `UNSUPPORTED_FRAME`, …) | `mission_rejected` (exit 6, result name in detail). **Special case** `MAV_MISSION_INVALID_SEQUENCE` on the *GCS* side is a mavctl bug (we only send the requested seq) — surfaced as such |
+| terminal ACK `MAV_MISSION_ACCEPTED` **after all expected items were sent** | upload success |
+| **U1** / `items_sent == 0`: terminal ACK non-ACCEPTED (`NO_SPACE`, `UNSUPPORTED`, `DENIED`, …) | clean `mission_rejected` (exit 6, result name + `items_sent: 0` in detail) — **no mission item has been sent by mavctl**, so the remote state is known unchanged |
+| **U2/U3** / `items_sent > 0`: terminal ACK non-ACCEPTED (`ERROR`, `NO_SPACE`, `INVALID_*`, `INVALID_SEQUENCE`, `DENIED`, `OPERATION_CANCELLED`, …) | `remote_mission_state_uncertain` (exit 6, `result_name` + `items_sent` + `sent_upto` in detail, hint: read-back) — ArduPilot truncates the old mission on `MISSION_COUNT` and writes each accepted item immediately; it does **not** roll back on a later error ACK, so the remote mission may already be partially replaced |
+| **premature** `MAV_MISSION_ACCEPTED` before all expected items were sent | protocol inconsistency → `remote_mission_state_uncertain` (exit 6) — the vehicle accepted fewer items than `MISSION_COUNT` announced |
 | ACK with `mission_type != MISSION` | ignored (mismatch; keep waiting for the real ACK) |
 | item/ACK from a non-locked source | ignored entirely (same source-filtering discipline as COMMAND_ACK) |
 | overall transaction deadline (candidate 15 s) | abort → `remote_mission_state_uncertain` whenever `COUNT` was already sent (U1+); plain error in U0 |
