@@ -96,7 +96,9 @@ class FakeAdapter:
 
     def clear_mission(self) -> MissionOutcome:
         self.calls.append("clear_mission")
-        return MissionOutcome(action="mission_clear", accepted=True, verified=True, observed_count=0)
+        return MissionOutcome(
+            action="mission_clear", accepted=True, verified=True, observed_count=0
+        )
 
 
 def _state(connected: bool = True, *, armed: bool = False, mode: str = "GUIDED") -> VehicleState:
