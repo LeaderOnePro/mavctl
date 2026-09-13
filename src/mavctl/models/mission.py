@@ -193,7 +193,7 @@ class MissionOutcome(BaseModel):
     item_count: int | None = None
     verified: bool | None = None
     observed_count: int | None = None
-    accepted_upto: int | None = None
+    sent_upto: int | None = None
 
 
 # -- pure mapping helpers ----------------------------------------------------
@@ -288,12 +288,19 @@ def mission_item_from_remote(
 ) -> MissionItem:
     """Convert a received ``MISSION_ITEM_INT`` into a semantic v1 item.
 
+    Lossless policy: the conversion succeeds only when the remote item is
+    exactly what mavctl v1 would have sent (plus schema-representable
+    values for the exposed optional fields). Any parameter that v1 does not
+    express, or whose default/unset semantics cannot be verified, makes the
+    item unsupported — download fails atomically instead of silently
+    dropping a non-default behaviour.
+
     Raises:
         UnsupportedRemoteMissionItem: if the frame or command is outside the
-            v1 whitelist, or the fields fall outside the strict schema bounds
-            (e.g. a takeoff with a non-positive altitude). The conversion is
-            deliberately conservative: download fails atomically instead of
-            emitting a lossy approximation.
+            v1 whitelist, a parameter that v1 does not express is non-default,
+            or the fields fall outside the strict schema bounds. The
+            conversion is deliberately conservative: download fails
+            atomically instead of emitting a lossy approximation.
     """
 
     def _unsupported(why: str) -> UnsupportedRemoteMissionItem:
@@ -303,8 +310,22 @@ def mission_item_from_remote(
         raise _unsupported(f"unsupported frame {frame}")
     try:
         if command == MISSION_COMMAND_TAKEOFF:
+            # param1 = min pitch, param2/param3 empty, param4 = yaw — none are
+            # expressed by the v1 schema, so all must be the canonical zeros.
+            # A non-zero x/y encodes a takeoff position v1 cannot represent.
+            if (param1, param2, param3, param4) != (0.0, 0.0, 0.0, 0.0):
+                raise _unsupported("non-default takeoff parameters (param1..4)")
+            if x != 0 or y != 0:
+                raise _unsupported("non-zero takeoff coordinates (x/y)")
             return MissionTakeoff(altitude_m=z)
         if command == MISSION_COMMAND_WAYPOINT:
+            # param1 = hold time and param2 = acceptance radius are v1
+            # fields; param3 (pass radius) and param4 (yaw) are not, so they
+            # must carry the canonical pass-through zero.
+            if param3 != 0.0:
+                raise _unsupported("non-default waypoint pass radius (param3)")
+            if param4 != 0.0:
+                raise _unsupported("non-default waypoint yaw (param4)")
             return MissionWaypoint(
                 lat_deg=x / 1e7,
                 lon_deg=y / 1e7,
@@ -313,6 +334,14 @@ def mission_item_from_remote(
                 accept_radius_m=param2,
             )
         if command == MISSION_COMMAND_LAND:
+            # param1 = abort altitude is a v1 field; param2 (precision land
+            # mode), param3 and param4 (yaw) are not.
+            if param2 != 0.0:
+                raise _unsupported("non-default land precision mode (param2)")
+            if param3 != 0.0:
+                raise _unsupported("non-default land parameter (param3)")
+            if param4 != 0.0:
+                raise _unsupported("non-default land yaw (param4)")
             return MissionLand(
                 lat_deg=x / 1e7,
                 lon_deg=y / 1e7,
@@ -320,8 +349,11 @@ def mission_item_from_remote(
                 abort_alt_m=param1,
             )
         if command == MISSION_COMMAND_RETURN_TO_LAUNCH:
-            # Location fields are meaningless on RTL items (ArduPilot ignores
-            # them), so they are intentionally not represented.
+            # All params are "Empty" per the XML and the location is ignored
+            # by the vehicle (do_RTL takes no location), so only the params
+            # must be canonical zeros for the item to round-trip.
+            if (param1, param2, param3, param4) != (0.0, 0.0, 0.0, 0.0):
+                raise _unsupported("non-default rtl parameters (param1..4)")
             return MissionRtl()
         raise _unsupported(f"unsupported command {command}")
     except ValidationError as exc:

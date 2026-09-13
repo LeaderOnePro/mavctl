@@ -13,6 +13,7 @@ from pydantic import ValidationError
 
 from mavctl.adapter.base import (
     AdapterError,
+    MissionCountUnsupportedError,
     MissionItemUnsupportedError,
     MissionProtocolError,
     MissionStateUncertainError,
@@ -181,8 +182,8 @@ class DaemonServer:
             "reason": "remote_mission_state_uncertain",
             "hint": "verify the remote mission with 'mavctl mission download'",
         }
-        if exc.accepted_upto is not None:
-            detail["accepted_upto"] = exc.accepted_upto
+        if exc.sent_upto is not None:
+            detail["sent_upto"] = exc.sent_upto
         if exc.observed_count is not None:
             detail["observed_count"] = exc.observed_count
         expected_seq = getattr(exc, "expected_seq", None)
@@ -191,10 +192,15 @@ class DaemonServer:
             detail["expected_seq"] = expected_seq
         if requested_seq is not None:
             detail["requested_seq"] = requested_seq
-        if action == "mission_clear":
+        if action == "mission_clear" and exc.observed_count is not None:
             message = (
                 f"mission_clear uncertain; "
                 f"remote mission count observed: {exc.observed_count}"
+            )
+        elif action == "mission_clear":
+            message = (
+                "mission_clear outcome uncertain; "
+                "remote mission count could not be observed"
             )
         else:
             message = f"{action} outcome uncertain; remote mission state must be verified"
@@ -255,6 +261,17 @@ class DaemonServer:
                     "command": exc.command,
                     "frame": exc.frame,
                     "hint": "inspect the mission with a full GCS; mavctl v1 cannot represent it",
+                },
+            )
+        except MissionCountUnsupportedError as exc:
+            return DaemonResponse.failure(
+                ExitCode.NACK_TIMEOUT,
+                f"remote mission has {exc.observed_count} items; mavctl v1 "
+                f"supports at most {exc.max_supported_items}",
+                {
+                    "reason": "mission_item_unsupported",
+                    "observed_count": exc.observed_count,
+                    "max_supported_items": exc.max_supported_items,
                 },
             )
         except MissionStateUncertainError as exc:

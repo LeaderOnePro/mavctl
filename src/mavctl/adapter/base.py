@@ -58,18 +58,32 @@ class MissionStateUncertainError(MissionProtocolError):
 
     Raised only once ``MISSION_COUNT``/``MISSION_CLEAR_ALL`` has reached the
     vehicle; failures before that are plain :class:`MissionProtocolError`.
+
+    ``sent_upto`` is the highest sequence number mavctl **locally sent** —
+    it is not a vehicle-confirmed acceptance.
     """
 
     def __init__(
         self,
         message: str,
         *,
-        accepted_upto: int | None = None,
+        sent_upto: int | None = None,
         observed_count: int | None = None,
     ) -> None:
         super().__init__(message, result_name="UNCERTAIN")
-        self.accepted_upto = accepted_upto
+        self.sent_upto = sent_upto
         self.observed_count = observed_count
+
+
+class MissionCountUnsupportedError(MissionProtocolError):
+    """The remote mission is larger than mavctl v1 can represent
+    (``MISSION_COUNT`` exceeded the supported item limit); nothing was
+    requested."""
+
+    def __init__(self, message: str, *, observed_count: int, max_supported_items: int) -> None:
+        super().__init__(message, result_name="NO_SPACE")
+        self.observed_count = observed_count
+        self.max_supported_items = max_supported_items
 
 
 class MissionItemUnsupportedError(MissionProtocolError):

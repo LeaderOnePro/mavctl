@@ -16,12 +16,13 @@ from typing import Any
 import pytest
 
 from mavctl.adapter.base import (
+    MissionCountUnsupportedError,
     MissionItemUnsupportedError,
     MissionProtocolError,
     MissionStateUncertainError,
 )
 from mavctl.adapter.pymavlink_adapter import PymavlinkAdapter, _MissionSequenceGapError
-from mavctl.models import DownloadedMissionV1, MissionV1
+from mavctl.models import MISSION_MAX_ITEMS, DownloadedMissionV1, MissionV1
 from tests.fakes import FakeMaster, FakeMsg
 
 _ARMED_FLAG = 0b10000000
@@ -173,7 +174,7 @@ def test_upload_happy_path() -> None:
     assert outcome.accepted is True
     assert outcome.result_name == "ACCEPTED"
     assert outcome.item_count == 4
-    assert outcome.accepted_upto == 3
+    assert outcome.sent_upto == 3
     # vehicle-paced upload: the GCS never sends item requests — the vehicle
     # does. The GCS sends COUNT and the requested items only.
     assert _request_seqs(master) == []
@@ -305,14 +306,36 @@ def test_upload_wrong_mission_type_ignored(fast_timeouts: None) -> None:
     assert _item_seqs(master) == []
 
 
-def test_upload_terminal_rejected_ack(fast_timeouts: None) -> None:
+def test_upload_u3_rejected_ack_is_uncertain_after_items(fast_timeouts: None) -> None:
+    """Once items are stored, a later non-ACCEPTED ACK leaves the remote
+    mission modified (ArduPilot does not roll back accepted items): the
+    outcome is uncertain, not a clean rejection."""
+
     adapter, master = _adapter()
     runner = _Runner(lambda: adapter.upload_mission(_mission(4)))
     runner.start()
     assert _play_upload(adapter, master, 4, ack_type=4)  # NO_SPACE
     assert runner.join()
+    assert isinstance(runner.error, MissionStateUncertainError)
+    assert "NO_SPACE" in str(runner.error)
+    assert runner.error.sent_upto == 3  # all four items were locally sent
+    # the rejection did not trigger any duplicate item sends
+    assert _item_seqs(master) == [0, 1, 2, 3]
+
+
+def test_upload_u1_ack_rejected_cleanly_before_items(fast_timeouts: None) -> None:
+    """A rejection that arrives before any item was sent is a clean mission
+    rejection: the vehicle stored nothing, so there is nothing uncertain."""
+
+    adapter, master = _adapter()
+    runner = _Runner(lambda: adapter.upload_mission(_mission(4)))
+    runner.start()
+    assert _wait_until(lambda: len(_sent(master, "MISSION_COUNT")) >= 1)
+    adapter._handle_message(_msg("MISSION_ACK", type=4, mission_type=0))  # NO_SPACE
+    assert runner.join(timeout=10)
     assert isinstance(runner.error, MissionProtocolError)
     assert runner.error.result_name == "NO_SPACE"
+    assert _item_seqs(master) == []
 
 
 def test_upload_operation_cancelled_is_uncertain(fast_timeouts: None) -> None:
@@ -359,7 +382,7 @@ def test_upload_u2_timeout_is_uncertain_without_blind_resend(
     assert runner.join(timeout=10)
     assert isinstance(runner.error, MissionStateUncertainError)
     assert "item 0" in str(runner.error)  # last sent sequence in the message
-    assert runner.error.accepted_upto == 0
+    assert runner.error.sent_upto == 0
     # no second item 0 (no blind resend), no future item 1
     assert _item_seqs(master) == [0]
 
@@ -602,3 +625,186 @@ def test_concurrent_downloads_serialize() -> None:
     assert runner2.join(timeout=15)
     # runner2 then runs its own session (also times out with no vehicle)
     assert isinstance(runner2.error, MissionProtocolError)
+
+
+# -- download count limit (P1-3) ---------------------------------------------
+
+
+def test_download_count_over_limit_fails_before_any_request(fast_timeouts: None) -> None:
+    adapter, master = _adapter()
+    runner = _Runner(lambda: adapter.download_mission())
+    runner.start()
+    assert _wait_until(lambda: len(_sent(master, "MISSION_REQUEST_LIST")) >= 1)
+    adapter._handle_message(_msg("MISSION_COUNT", count=101, mission_type=0))
+    assert runner.join(timeout=10)
+    assert isinstance(runner.error, MissionCountUnsupportedError)
+    assert runner.error.observed_count == 101
+    assert runner.error.max_supported_items == MISSION_MAX_ITEMS
+    # no item requests were issued for an oversized mission
+    assert _sent(master, "MISSION_REQUEST_INT") == []
+
+
+# -- session boundary race (P2-4) --------------------------------------------
+
+
+def test_stale_delivery_racing_session_boundary_is_dropped() -> None:
+    """A reader delivery parked inside _deliver_mission while a session
+    boundary (end + begin) passes must be dropped by its outdated session
+    token instead of leaking into the new session's inbox."""
+
+    adapter, _master = _adapter()
+    parked = threading.Event()
+    resume = threading.Event()
+    original_target = adapter._is_locked_target
+
+    def parked_target(msg: FakeMsg) -> bool:
+        parked.set()
+        assert resume.wait(timeout=5.0)
+        return original_target(msg)
+
+    adapter._is_locked_target = parked_target  # type: ignore[method-assign]
+    adapter._begin_mission_session()
+    token_at_park = adapter._session_seq
+
+    delivery = _Runner(lambda: adapter._deliver_mission(_msg("MISSION_REQUEST_INT", seq=0)))
+    delivery.start()
+    assert parked.wait(5.0)
+
+    # the boundary passes while the delivery is parked
+    adapter._end_mission_session()
+    adapter._begin_mission_session()
+    assert adapter._session_seq == token_at_park + 1
+    resume.set()
+    assert delivery.join(timeout=5.0)
+
+    # the stale delivery never leaked into the new session's inbox
+    assert adapter._mission_inbox == []
+
+
+# -- clear transaction matrix ------------------------------------------------
+
+
+def test_clear_happy_path_with_readback(fast_timeouts: None) -> None:
+    adapter, master = _adapter()
+    runner = _Runner(lambda: adapter.clear_mission())
+    runner.start()
+    assert _wait_until(lambda: len(_sent(master, "MISSION_CLEAR_ALL")) >= 1)
+    adapter._handle_message(_msg("MISSION_ACK", type=0, mission_type=0))
+    assert _wait_until(lambda: len(_sent(master, "MISSION_REQUEST_LIST")) >= 1)
+    adapter._handle_message(_msg("MISSION_COUNT", count=0, mission_type=0))
+    assert runner.join()
+    assert runner.error is None
+    outcome = runner.result
+    assert outcome.accepted is True
+    assert outcome.verified is True
+    assert outcome.observed_count == 0
+
+
+def test_clear_ack_rejected_is_typed_mission_rejection(fast_timeouts: None) -> None:
+    adapter, master = _adapter()
+    runner = _Runner(lambda: adapter.clear_mission())
+    runner.start()
+    assert _wait_until(lambda: len(_sent(master, "MISSION_CLEAR_ALL")) >= 1)
+    adapter._handle_message(_msg("MISSION_ACK", type=14, mission_type=0))  # DENIED
+    assert runner.join(timeout=10)
+    assert isinstance(runner.error, MissionProtocolError)
+    assert not isinstance(runner.error, MissionStateUncertainError)
+    assert runner.error.result_name == "DENIED"
+
+
+def test_clear_ack_timeout_resends_once_then_uncertain(fast_timeouts: None) -> None:
+    adapter, master = _adapter()
+    runner = _Runner(lambda: adapter.clear_mission())
+    runner.start()
+    assert _wait_until(lambda: len(_sent(master, "MISSION_CLEAR_ALL")) >= 1)
+    # _MISSION_CLEAR_RESENDS is 0 under fast_timeouts: the first timeout
+    # immediately exhausts the single allowed resend budget.
+    assert runner.join(timeout=10)
+    assert isinstance(runner.error, MissionStateUncertainError)
+    assert runner.error.observed_count is None
+
+
+def test_clear_ack_timeout_resends_clear_once(fast_timeouts: None) -> None:
+    import mavctl.adapter.pymavlink_adapter as mod
+
+    mod._MISSION_CLEAR_RESENDS = 1
+    try:
+        adapter, master = _adapter()
+        runner = _Runner(lambda: adapter.clear_mission())
+        runner.start()
+        # first CLEAR_ALL times out; the single allowed resend fires
+        assert _wait_until(lambda: len(_sent(master, "MISSION_CLEAR_ALL")) >= 2)
+        # and still nothing answers: resend budget exhausted → uncertain
+        assert runner.join(timeout=10)
+        assert isinstance(runner.error, MissionStateUncertainError)
+        assert len(_sent(master, "MISSION_CLEAR_ALL")) == 2
+    finally:
+        mod._MISSION_CLEAR_RESENDS = 1
+
+
+def test_clear_readback_count_nonzero_is_uncertain(fast_timeouts: None) -> None:
+    adapter, master = _adapter()
+    runner = _Runner(lambda: adapter.clear_mission())
+    runner.start()
+    assert _wait_until(lambda: len(_sent(master, "MISSION_CLEAR_ALL")) >= 1)
+    adapter._handle_message(_msg("MISSION_ACK", type=0, mission_type=0))
+    assert _wait_until(lambda: len(_sent(master, "MISSION_REQUEST_LIST")) >= 1)
+    adapter._handle_message(_msg("MISSION_COUNT", count=2, mission_type=0))
+    assert runner.join(timeout=10)
+    assert isinstance(runner.error, MissionStateUncertainError)
+    assert runner.error.observed_count == 2
+
+
+def test_clear_readback_timeout_is_uncertain_without_count(fast_timeouts: None) -> None:
+    adapter, master = _adapter()
+    runner = _Runner(lambda: adapter.clear_mission())
+    runner.start()
+    assert _wait_until(lambda: len(_sent(master, "MISSION_CLEAR_ALL")) >= 1)
+    adapter._handle_message(_msg("MISSION_ACK", type=0, mission_type=0))
+    assert _wait_until(lambda: len(_sent(master, "MISSION_REQUEST_LIST")) >= 1)
+    # no COUNT answer: read-back times out
+    assert runner.join(timeout=10)
+    assert isinstance(runner.error, MissionStateUncertainError)
+    assert runner.error.observed_count is None
+
+
+def test_clear_ignores_wrong_source_and_wrong_mission_type(fast_timeouts: None) -> None:
+    adapter, master = _adapter()
+    runner = _Runner(lambda: adapter.clear_mission())
+    runner.start()
+    assert _wait_until(lambda: len(_sent(master, "MISSION_CLEAR_ALL")) >= 1)
+    # wrong source ACK: ignored, cannot satisfy the clear
+    adapter._handle_message(
+        FakeMsg("MISSION_ACK", src_system=9, src_component=9, type=0, mission_type=0)
+    )
+    # wrong mission_type ACK: ignored as a mismatch
+    adapter._handle_message(_msg("MISSION_ACK", type=0, mission_type=1))
+    assert runner.join(timeout=10)
+    assert isinstance(runner.error, MissionStateUncertainError)
+
+
+def test_clear_readback_has_no_reentrant_mission_lock() -> None:
+    """The read-back helper must run inside the clear transaction without
+    re-acquiring _mission_lock (a threading.Lock would self-deadlock); the
+    bounded join proves completion."""
+
+    import mavctl.adapter.pymavlink_adapter as mod
+
+    lock_holds: dict[str, bool] = {}
+    original = mod.PymavlinkAdapter._request_count_locked
+
+    def counting(self: PymavlinkAdapter, master: Any, overall: float) -> int:
+        lock_holds["reentrant"] = adapter._mission_lock.locked()
+        return original(self, master, overall)
+
+    adapter, master = _adapter()
+    adapter._request_count_locked = counting.__get__(adapter)  # type: ignore[method-assign]
+    runner = _Runner(lambda: adapter.clear_mission())
+    runner.start()
+    assert _wait_until(lambda: len(_sent(master, "MISSION_CLEAR_ALL")) >= 1)
+    adapter._handle_message(_msg("MISSION_ACK", type=0, mission_type=0))
+    assert _wait_until(lambda: len(_sent(master, "MISSION_REQUEST_LIST")) >= 1)
+    adapter._handle_message(_msg("MISSION_COUNT", count=0, mission_type=0))
+    assert runner.join(timeout=10)
+    assert runner.error is None
+    assert lock_holds["reentrant"] is True  # helper ran while the lock was held

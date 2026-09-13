@@ -20,12 +20,14 @@ from pymavlink import mavutil
 
 from mavctl.adapter.base import (
     ConnectionLostError,
+    MissionCountUnsupportedError,
     MissionItemUnsupportedError,
     MissionProtocolError,
     MissionStateUncertainError,
     ModeMappingUnavailableError,
 )
 from mavctl.models import (
+    MISSION_MAX_ITEMS,
     MISSION_TYPE_MISSION,
     Attitude,
     Battery,
@@ -90,9 +92,9 @@ class _MissionSequenceGapError(MissionStateUncertainError):
         *,
         expected_seq: int,
         requested_seq: int,
-        accepted_upto: int | None = None,
+        sent_upto: int | None = None,
     ) -> None:
-        super().__init__(message, accepted_upto=accepted_upto)
+        super().__init__(message, sent_upto=sent_upto)
         self.expected_seq = expected_seq
         self.requested_seq = requested_seq
 
@@ -249,6 +251,7 @@ class PymavlinkAdapter:
         self._mission_lock = threading.Lock()
         self._mission_cond = threading.Condition()
         self._mission_active = False
+        self._session_seq = 0
         self._mission_inbox: list[tuple[str, Any]] = []
 
     # -- lifecycle ---------------------------------------------------------
@@ -417,12 +420,13 @@ class PymavlinkAdapter:
         items = mission.items
         count = len(items)
         overall = time.monotonic() + _MISSION_TRANSACTION_TIMEOUT_S
-        accepted_upto: int | None = None
+        sent_upto: int | None = None
+        items_sent = 0
         expected_next_seq = 0
         last_sent_seq: int | None = None
 
         def uncertain(message: str) -> MissionStateUncertainError:
-            return MissionStateUncertainError(message, accepted_upto=accepted_upto)
+            return MissionStateUncertainError(message, sent_upto=sent_upto)
 
         def accept_request_or_ack(msg_type: str, msg: Any) -> bool:
             if msg_type not in ("MISSION_REQUEST_INT", "MISSION_ACK"):
@@ -467,11 +471,27 @@ class PymavlinkAdapter:
                         self._send_mission_count(master, count)
                         continue
                     if msg_type == "MISSION_ACK":
+                        # Phase-aware ACK mapping. Before any item is sent the
+                        # vehicle cannot have stored anything, so a rejection
+                        # is clean; once items are stored the remote mission
+                        # is already modified and the outcome must be treated
+                        # as uncertain (ArduPilot does not roll back accepted
+                        # items on a later error ACK).
                         result = int(msg.type)
-                        if result == 15:
-                            raise uncertain("vehicle cancelled the upload")
+                        if result == 0:
+                            # Premature ACCEPTED: protocol anomaly — the
+                            # vehicle accepted fewer items than announced.
+                            raise uncertain(
+                                f"premature mission ACK after {items_sent} item(s)"
+                            )
+                        if items_sent == 0:
+                            raise MissionProtocolError(
+                                f"mission upload rejected: {mission_result_name(result)}",
+                                result_name=mission_result_name(result),
+                            )
                         raise uncertain(
-                            f"unexpected mid-upload ACK {mission_result_name(result)}"
+                            f"vehicle rejected the upload after {items_sent} "
+                            f"item(s): {mission_result_name(result)}"
                         )
                     seq = int(msg.seq)
                     if seq >= count:
@@ -480,7 +500,7 @@ class PymavlinkAdapter:
                             f"(expected {expected_next_seq})",
                             expected_seq=expected_next_seq,
                             requested_seq=seq,
-                            accepted_upto=accepted_upto,
+                            sent_upto=sent_upto,
                         )
                     if seq > expected_next_seq:
                         raise _MissionSequenceGapError(
@@ -490,7 +510,7 @@ class PymavlinkAdapter:
                             "vehicle's request sequence",
                             expected_seq=expected_next_seq,
                             requested_seq=seq,
-                            accepted_upto=accepted_upto,
+                            sent_upto=sent_upto,
                         )
                     # seq == expected: the expected item — send and advance.
                     # seq < expected: explicit duplicate request — re-send the
@@ -498,11 +518,12 @@ class PymavlinkAdapter:
                     # trigger; retry is request-driven).
                     self._send_mission_item(master, items[seq], seq)
                     last_sent_seq = seq
+                    items_sent += 1
                     if seq == expected_next_seq:
-                        accepted_upto = seq
+                        sent_upto = seq
                         expected_next_seq = seq + 1
                     resends = 0
-                accepted_upto = count - 1
+                sent_upto = count - 1
                 # Terminal ACK. The vehicle sends it immediately after the last
                 # item; keep listening until the overall deadline because its
                 # 8 s timer can still deliver OPERATION_CANCELLED. Late
@@ -522,13 +543,16 @@ class PymavlinkAdapter:
                                 accepted=True,
                                 result_name="ACCEPTED",
                                 item_count=count,
-                                accepted_upto=count - 1,
+                                sent_upto=count - 1,
                             )
-                        if result == 15:
-                            raise uncertain("vehicle cancelled the upload")
-                        raise MissionProtocolError(
-                            f"mission upload rejected: {mission_result_name(result)}",
-                            result_name=mission_result_name(result),
+                        # U3: every item was already sent and stored — any
+                        # non-ACCEPTED result (including the vehicle's 8 s
+                        # OPERATION_CANCELLED) leaves the remote mission
+                        # modified. Phase-aware mapping: uncertain, never a
+                        # clean rejection.
+                        raise uncertain(
+                            f"upload ended with {mission_result_name(result)} "
+                            f"after {items_sent} item(s)"
                         )
                     seq = int(msg.seq)
                     if 0 <= seq < count:
@@ -591,6 +615,16 @@ class PymavlinkAdapter:
                             result_name=mission_result_name(result),
                         )
                     count = int(msg.count)
+                if count > MISSION_MAX_ITEMS:
+                    # Fail before requesting anything: v1 cannot represent a
+                    # mission this large, and issuing 100+ item requests would
+                    # only churn the link before failing anyway.
+                    raise MissionCountUnsupportedError(
+                        f"remote mission has {count} items; mavctl v1 supports "
+                        f"at most {MISSION_MAX_ITEMS}",
+                        observed_count=count,
+                        max_supported_items=MISSION_MAX_ITEMS,
+                    )
                 if count == 0:
                     self._send_mission_ack_accepted(master)
                     return DownloadedMissionV1(version=1, items=[])
@@ -859,6 +893,7 @@ class PymavlinkAdapter:
         """Activate mission message delivery; drop any stale traffic."""
 
         with self._mission_cond:
+            self._session_seq += 1
             self._mission_active = True
             self._mission_inbox.clear()
 
@@ -874,12 +909,20 @@ class PymavlinkAdapter:
 
         Messages are dropped unless a transaction is running and the sender
         is the locked autopilot — stale or foreign mission traffic can never
-        satisfy a later transaction.
+        satisfy a later transaction. The active check, the inbox append and
+        the notify all happen inside the same ``_mission_cond`` critical
+        section, and the session token is captured at entry: a delivery that
+        raced with a session boundary (end + begin) is recognized as stale by
+        its outdated token and dropped instead of leaking into the new
+        session's inbox.
         """
 
-        if not self._mission_active or not self._is_locked_target(msg):
+        session_token = self._session_seq
+        if not self._is_locked_target(msg):
             return
         with self._mission_cond:
+            if not self._mission_active or session_token != self._session_seq:
+                return
             self._mission_inbox.append((msg.get_type(), msg))
             self._mission_cond.notify_all()
 

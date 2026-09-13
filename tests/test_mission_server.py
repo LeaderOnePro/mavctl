@@ -6,6 +6,7 @@ import asyncio
 from typing import Any
 
 from mavctl.adapter.base import (
+    MissionCountUnsupportedError,
     MissionItemUnsupportedError,
     MissionProtocolError,
     MissionStateUncertainError,
@@ -158,7 +159,7 @@ async def test_mission_upload_dry_run_sends_nothing() -> None:
 
 
 async def test_mission_upload_uncertain_maps_to_exit_6() -> None:
-    error = MissionStateUncertainError("vehicle vanished", accepted_upto=1)
+    error = MissionStateUncertainError("vehicle vanished", sent_upto=1)
     adapter = _ScriptedMissionAdapter(_grounded_state(), error=error)
     server = DaemonServer(adapter, "udp:127.0.0.1:14550")
     response = await server._dispatch(
@@ -168,12 +169,12 @@ async def test_mission_upload_uncertain_maps_to_exit_6() -> None:
     assert response.error is not None
     assert response.error.code == ExitCode.NACK_TIMEOUT
     assert response.error.detail["reason"] == "remote_mission_state_uncertain"
-    assert response.error.detail["accepted_upto"] == 1
+    assert response.error.detail["sent_upto"] == 1
     assert "internal" not in (response.error.message or "").lower()
 
 
 async def test_mission_upload_sequence_gap_surfaces_expected_and_requested() -> None:
-    error = MissionStateUncertainError("future item requested", accepted_upto=0)
+    error = MissionStateUncertainError("future item requested", sent_upto=0)
     error.expected_seq = 1  # type: ignore[attr-defined]
     error.requested_seq = 2  # type: ignore[attr-defined]
     adapter = _ScriptedMissionAdapter(_grounded_state(), error=error)
@@ -229,6 +230,21 @@ async def test_mission_download_unsupported_item_maps_to_exit_6() -> None:
     assert response.error.detail["command"] == 999
 
 
+async def test_mission_download_count_over_limit_maps_to_exit_6() -> None:
+    error = MissionCountUnsupportedError(
+        "remote mission has 101 items", observed_count=101, max_supported_items=100
+    )
+    adapter = _ScriptedMissionAdapter(_grounded_state(), error=error)
+    server = DaemonServer(adapter, "udp:127.0.0.1:14550")
+    response = await server._dispatch(_params(method="mission_download"))
+    assert response.ok is False
+    assert response.error is not None
+    assert response.error.code == ExitCode.NACK_TIMEOUT
+    assert response.error.detail["reason"] == "mission_item_unsupported"
+    assert response.error.detail["observed_count"] == 101
+    assert response.error.detail["max_supported_items"] == 100
+
+
 async def test_mission_download_protocol_timeout_maps_to_exit_6() -> None:
     error = MissionProtocolError("vehicle silent", result_name="TIMEOUT")
     adapter = _ScriptedMissionAdapter(_grounded_state(), error=error)
@@ -282,6 +298,22 @@ async def test_mission_clear_happy_path_verified() -> None:
     assert response.result is not None
     assert response.result["verified"] is True
     assert response.result["observed_count"] == 0
+
+
+async def test_mission_clear_uncertain_without_observed_count() -> None:
+    """When the read-back itself times out the count is unknown: the message
+    must not claim an observed count and the detail must omit the key."""
+
+    error = MissionStateUncertainError("read-back timeout", observed_count=None)
+    adapter = _ScriptedMissionAdapter(_grounded_state(), error=error)
+    server = DaemonServer(adapter, "udp:127.0.0.1:14550")
+    response = await server._dispatch(_params(method="mission_clear", confirm=True))
+    assert response.ok is False
+    assert response.error is not None
+    assert response.error.code == ExitCode.NACK_TIMEOUT
+    assert response.error.detail["reason"] == "remote_mission_state_uncertain"
+    assert "observed_count" not in response.error.detail
+    assert "could not be observed" in (response.error.message or "")
 
 
 async def test_mission_clear_uncertain_includes_observed_count() -> None:

@@ -461,7 +461,17 @@ def mission_download(
         typer.echo(json.dumps(mission, indent=2, sort_keys=True))
         return
     if output is not None:
-        output.write_text(json.dumps(mission, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        try:
+            output.write_text(
+                json.dumps(mission, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+            )
+        except OSError as exc:
+            fail(
+                ExitCode.USAGE_ERROR,
+                f"cannot write mission output to {output}: {exc}",
+                json_mode=json_mode,
+                detail={"reason": "mission_output_unwritable", "path": str(output)},
+            )
         emit_success(
             result,
             json_mode=False,

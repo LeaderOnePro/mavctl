@@ -168,6 +168,42 @@ def test_download_output_file_writes_mission_json(
     assert "mission downloaded" in result.stdout
 
 
+def test_download_output_write_failure_human_exits_2_without_traceback(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
+    # the daemon already answered successfully; the write failure must still
+    # surface as a controlled usage error, never as a fake success
+    monkeypatch.setattr(_CALL_DAEMON, lambda *_a, **_k: DaemonResponse.success(_download_payload()))
+
+    parent_is_file = tmp_path / "not-a-dir"
+    parent_is_file.write_text("x")
+    target = parent_is_file / "mission.json"  # parent is a file → OSError
+
+    result = runner.invoke(app, ["mission", "download", "--output", str(target)])
+    assert result.exit_code == ExitCode.USAGE_ERROR
+    assert "cannot write mission output" in result.output
+    assert str(target) in result.output
+    assert "Traceback" not in result.output
+
+
+def test_download_output_write_failure_json_reason(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
+    monkeypatch.setattr(_CALL_DAEMON, lambda *_a, **_k: DaemonResponse.success(_download_payload()))
+
+    parent_is_file = tmp_path / "not-a-dir"
+    parent_is_file.write_text("x")
+    target = parent_is_file / "mission.json"
+
+    # --output and --json are mutually exclusive by design, so the write
+    # failure surfaces through the human path; the structured detail exists
+    # for future JSON output modes and is covered by the reason contract.
+    result = runner.invoke(app, ["mission", "download", "--output", str(target)])
+    assert result.exit_code == ExitCode.USAGE_ERROR
+    assert "cannot write mission output" in result.output
+    assert "Traceback" not in result.output
+
+
 def test_download_json_and_output_are_mutually_exclusive(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Any
 ) -> None:
