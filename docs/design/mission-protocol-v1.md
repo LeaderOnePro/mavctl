@@ -343,7 +343,7 @@ a future item sent ahead of `request_i` would be answered
 | Incoming `MISSION_REQUEST_INT` | mavctl behavior |
 | --- | --- |
 | `seq == expected_next_seq` | send exactly `MISSION_ITEM_INT(seq)`; advance `expected_next_seq` |
-| `seq < expected_next_seq` (duplicate of an already-sent item) | re-send that already-sent item **without advancing** `expected_next_seq` (packet-loss / retry compatible) |
+| `seq < expected_next_seq` (duplicate of an already-sent item) | re-send that already-sent item **without advancing** `expected_next_seq` — this explicit duplicate request is the **only** item re-send trigger; blind re-sends on timeout are forbidden (see the U2 row below) |
 | `seq > expected_next_seq` (future item / gap) | **send nothing; abort** → `remote_mission_state_uncertain` (exit 6) with `detail.expected_seq`, `detail.requested_seq` and `detail.accepted_upto`; hint: verify with `mavctl mission download` |
 | `seq >= N` (out of range) | same abort as the future-item row (a special case of the gap) |
 
@@ -353,7 +353,7 @@ a future item sent ahead of `request_i` would be answered
 | --- | --- | --- |
 | **U0** | `MISSION_COUNT` not yet sent (local validation/guards) | plain failure (exit 2/5); **no uncertain state** — nothing was sent |
 | **U1** | `COUNT` sent, awaiting first `MISSION_REQUEST_INT(0)` | no item has been accepted; **resend `MISSION_COUNT`** up to `mission_retry_count`; if still nothing → abort with `remote_mission_state_uncertain` (the vehicle may be mid-allocation; read-back recommended) |
-| **U2** | items flowing (awaiting `REQUEST_INT(seq)` after sending item `seq`) | requests are classified per the ordering table above (expected / duplicate / future-gap); on request timeout re-send the **last expected** item; on resend exhaustion → abort `remote_mission_state_uncertain` (a partial prefix may be stored). **Never** send items ahead of requests — future items are a strict-sequence violation that aborts the transaction |
+| **U2** | item(s) sent, awaiting the next `REQUEST_INT` or the terminal `ACK` | **retry is request-driven**: an item is re-sent only after an explicit duplicate `REQUEST_INT` for that seq. A request timeout is **never** answered with a blind item re-send — the GCS cannot know whether the last item was lost, accepted with the next request lost, or the vehicle entered an error state (re-sending item *k* to a vehicle that advanced to *k+1* hits `INVALID_SEQUENCE`). mavctl keeps consuming and classifying explicit vehicle traffic until the overall deadline, then aborts `remote_mission_state_uncertain` (`detail.accepted_upto`, last-sent seq in the message). **Never** send items ahead of requests — future items are a strict-sequence violation that aborts the transaction. This is mavctl v1 `[DECIDED]` safety policy grounded in the verified ArduPilot strict `request_i` ordering, **not** a universal MAVLink rule. `[OPEN]` whole-upload restart via repeated `MISSION_COUNT` after a U2 uncertain outcome is future recovery design — v1 reports uncertain and stops |
 | **U3** | last item sent, awaiting terminal `MISSION_ACK` | wait `mission_ack_timeout_s` (candidate 2.0 s; the vehicle ACKs immediately per §A.5, so this window is short); on timeout → **not** an immediate error: the 8 s vehicle timer may still deliver `OPERATION_CANCELLED`/ACCEPTED — keep listening up to the overall transaction deadline, then `remote_mission_state_uncertain` |
 
 `[DECIDED]` cross-cutting behavior:

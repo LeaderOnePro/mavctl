@@ -419,6 +419,7 @@ class PymavlinkAdapter:
         overall = time.monotonic() + _MISSION_TRANSACTION_TIMEOUT_S
         accepted_upto: int | None = None
         expected_next_seq = 0
+        last_sent_seq: int | None = None
 
         def uncertain(message: str) -> MissionStateUncertainError:
             return MissionStateUncertainError(message, accepted_upto=accepted_upto)
@@ -434,27 +435,36 @@ class PymavlinkAdapter:
                 self._send_mission_count(master, count)
                 resends = 0
                 while expected_next_seq < count:
-                    until = min(overall, time.monotonic() + _MISSION_REQUEST_TIMEOUT_S)
+                    if last_sent_seq is None:
+                        # U1: COUNT sent, no request seen yet — COUNT is the
+                        # only thing that can be safely retried here.
+                        until = min(overall, time.monotonic() + _MISSION_REQUEST_TIMEOUT_S)
+                    else:
+                        # U2: at least one item was sent. A blind re-send is
+                        # unsafe — the GCS cannot know whether the last item
+                        # was lost, accepted with the next request lost, or
+                        # the vehicle entered an error state (re-sending item
+                        # k to a vehicle that advanced to k+1 hits
+                        # INVALID_SEQUENCE). Wait for explicit vehicle
+                        # traffic until the overall deadline; late requests
+                        # are still classified and answered below.
+                        until = overall
                     msg_type, msg = self._wait_mission(accept_request_or_ack, until)
                     if msg is None:
                         if time.monotonic() >= overall:
-                            raise uncertain("vehicle stopped requesting mission items")
+                            if last_sent_seq is None:
+                                raise uncertain("vehicle did not request mission items")
+                            raise uncertain(
+                                f"vehicle stopped requesting after item "
+                                f"{last_sent_seq}"
+                            )
+                        # U1 per-attempt timeout: retry COUNT per design.
                         resends += 1
                         if resends > _MISSION_RETRIES:
                             raise uncertain(
-                                "vehicle stopped requesting mission items after retries"
+                                "vehicle did not request mission items after retries"
                             )
-                        # Stall recovery: the vehicle's request_i has not
-                        # advanced past the last item it confirmed, so re-send
-                        # that item (or COUNT before the first request).
-                        if expected_next_seq == 0:
-                            self._send_mission_count(master, count)
-                        else:
-                            self._send_mission_item(
-                                master,
-                                items[expected_next_seq - 1],
-                                expected_next_seq - 1,
-                            )
+                        self._send_mission_count(master, count)
                         continue
                     if msg_type == "MISSION_ACK":
                         result = int(msg.type)
@@ -483,9 +493,11 @@ class PymavlinkAdapter:
                             accepted_upto=accepted_upto,
                         )
                     # seq == expected: the expected item — send and advance.
-                    # seq < expected: duplicate request — re-send the
-                    # already-sent item without advancing (retry compatible).
+                    # seq < expected: explicit duplicate request — re-send the
+                    # already-sent item without advancing (the ONLY resend
+                    # trigger; retry is request-driven).
                     self._send_mission_item(master, items[seq], seq)
+                    last_sent_seq = seq
                     if seq == expected_next_seq:
                         accepted_upto = seq
                         expected_next_seq = seq + 1

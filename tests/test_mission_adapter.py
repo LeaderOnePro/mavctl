@@ -340,21 +340,44 @@ def test_upload_timeout_is_uncertain_after_count(fast_timeouts: None) -> None:
     assert _item_seqs(master) == []
 
 
-def test_upload_u2_stall_resends_last_item(fast_timeouts: None) -> None:
+def test_upload_u2_timeout_is_uncertain_without_blind_resend(
+    fast_timeouts: None,
+) -> None:
+    """U2 stall (item 0 sent on request 0, then silence): mavctl must NOT
+    blind-re-send item 0 or send item 1 — the GCS cannot know whether the
+    item was lost, accepted with the next request lost, or the vehicle
+    entered an error state. It waits until the overall deadline, then reports
+    remote_mission_state_uncertain with accepted_upto == 0."""
+
     adapter, master = _adapter()
     runner = _Runner(lambda: adapter.upload_mission(_mission(2)))
     runner.start()
     assert _wait_until(lambda: len(_sent(master, "MISSION_COUNT")) >= 1)
     adapter._handle_message(_msg("MISSION_REQUEST_INT", seq=0, mission_type=0))
     assert _wait_until(lambda: _item_seqs(master) == [0])
-    # vehicle stalls instead of requesting seq 1; mavctl re-sends item 0
-    assert _wait_until(lambda: _item_seqs(master) == [0, 0])
-    # recover: vehicle finally requests the next item
-    adapter._handle_message(_msg("MISSION_REQUEST_INT", seq=1, mission_type=0))
-    assert _wait_until(lambda: _item_seqs(master) == [0, 0, 1])
-    adapter._handle_message(_msg("MISSION_ACK", type=0, mission_type=0))
-    assert runner.join()
-    assert runner.error is None
+    # vehicle stalls: no request 1, no terminal ACK
+    assert runner.join(timeout=10)
+    assert isinstance(runner.error, MissionStateUncertainError)
+    assert "item 0" in str(runner.error)  # last sent sequence in the message
+    assert runner.error.accepted_upto == 0
+    # no second item 0 (no blind resend), no future item 1
+    assert _item_seqs(master) == [0]
+
+
+def test_upload_u1_retries_count_then_uncertain(fast_timeouts: None) -> None:
+    """U1: COUNT is re-sent only on per-attempt timeouts (never on other
+    paths), and exhaustion reports uncertain with no items sent."""
+
+    import mavctl.adapter.pymavlink_adapter as mod
+
+    adapter, master = _adapter()
+    runner = _Runner(lambda: adapter.upload_mission(_mission(2)))
+    runner.start()
+    assert runner.join(timeout=10)
+    assert isinstance(runner.error, MissionStateUncertainError)
+    # initial send + one resend per _MISSION_RETRIES attempt, timeouts only
+    assert len(_sent(master, "MISSION_COUNT")) == 1 + mod._MISSION_RETRIES
+    assert _item_seqs(master) == []
 
 
 def test_stale_mission_message_cannot_satisfy_later_transaction(
