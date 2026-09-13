@@ -9,7 +9,14 @@ from __future__ import annotations
 
 from typing import Protocol, runtime_checkable
 
-from mavctl.models import CommandOutcome, Telemetry, VehicleState
+from mavctl.models import (
+    CommandOutcome,
+    DownloadedMissionV1,
+    MissionOutcome,
+    MissionV1,
+    Telemetry,
+    VehicleState,
+)
 
 
 class AdapterError(Exception):
@@ -30,6 +37,50 @@ class ModeMappingUnavailableError(AdapterError):
     ``mode_map_unavailable``) instead of an internal error. Unknown-mode user
     input is rejected earlier by the guard (exit 2 ``unknown_mode``).
 """
+
+
+class MissionProtocolError(AdapterError):
+    """MAVLink mission protocol failure: vehicle rejection, protocol
+    violation, or a transaction timeout whose remote effect is known.
+
+    ``result_name`` carries the ``MAV_MISSION_RESULT`` name (e.g.
+    ``NO_SPACE``) or a diagnostic such as ``TIMEOUT``.
+    """
+
+    def __init__(self, message: str, *, result_name: str = "ERROR") -> None:
+        super().__init__(message)
+        self.result_name = result_name
+
+
+class MissionStateUncertainError(MissionProtocolError):
+    """The remote mission state may be partially modified and must be
+    verified with ``mavctl mission download``.
+
+    Raised only once ``MISSION_COUNT``/``MISSION_CLEAR_ALL`` has reached the
+    vehicle; failures before that are plain :class:`MissionProtocolError`.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        accepted_upto: int | None = None,
+        observed_count: int | None = None,
+    ) -> None:
+        super().__init__(message, result_name="UNCERTAIN")
+        self.accepted_upto = accepted_upto
+        self.observed_count = observed_count
+
+
+class MissionItemUnsupportedError(MissionProtocolError):
+    """A received mission item cannot be represented in the v1 schema;
+    download fails atomically rather than approximating it."""
+
+    def __init__(self, message: str, *, seq: int, command: int, frame: int) -> None:
+        super().__init__(message, result_name="UNSUPPORTED")
+        self.seq = seq
+        self.command = command
+        self.frame = frame
 
 
 @runtime_checkable
@@ -94,5 +145,37 @@ class VehicleAdapter(Protocol):
 
     def rtl(self) -> CommandOutcome:
         """Command a return-to-launch."""
+        ...
+
+    def upload_mission(self, mission: MissionV1) -> MissionOutcome:
+        """Run the MAVLink mission upload transaction for a validated plan.
+
+        Raises:
+            MissionProtocolError: the vehicle rejected the mission or the
+                transaction failed with a known remote outcome.
+            MissionStateUncertainError: the transaction aborted after the
+                vehicle may have stored a partial mission.
+        """
+        ...
+
+    def download_mission(self) -> DownloadedMissionV1:
+        """Read the remote mission atomically.
+
+        Raises:
+            MissionProtocolError: transaction timeout or vehicle denial —
+                never a partial mission.
+            MissionItemUnsupportedError: the remote mission contains items
+                outside the v1 schema.
+        """
+        ...
+
+    def clear_mission(self) -> MissionOutcome:
+        """Clear the remote mission and verify the remote count is zero.
+
+        Raises:
+            MissionProtocolError: the vehicle rejected the clear.
+            MissionStateUncertainError: the clear or its read-back could not
+                be confirmed (``observed_count`` set when known).
+        """
         ...
 

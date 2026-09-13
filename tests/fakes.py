@@ -56,10 +56,19 @@ class FakeMaster:
         self.flightmode = flightmode
         self.closed = False
         self._modes = modes or {"STABILIZE": 0, "GUIDED": 4, "LOITER": 5, "RTL": 6, "LAND": 9}
-        self.sent: list[tuple[int, int, tuple[float, ...]]] = []
+        # Mixed entry shapes: COMMAND_LONG sends record
+        # (command:int, confirmation:int, params:tuple[float, ...]); mission
+        # sends record ("MISSION_*", args:tuple[Any, ...]).
+        self.sent: list[tuple[Any, ...]] = []
         self.mav = SimpleNamespace(
             command_long_send=self._command_long_send,
             request_data_stream_send=lambda *a, **k: None,
+            mission_count_send=lambda *a: self.sent.append(("MISSION_COUNT", a)),
+            mission_request_list_send=lambda *a: self.sent.append(("MISSION_REQUEST_LIST", a)),
+            mission_request_int_send=lambda *a: self.sent.append(("MISSION_REQUEST_INT", a)),
+            mission_item_int_send=lambda *a: self.sent.append(("MISSION_ITEM_INT", a)),
+            mission_clear_all_send=lambda *a: self.sent.append(("MISSION_CLEAR_ALL", a)),
+            mission_ack_send=lambda *a: self.sent.append(("MISSION_ACK", a)),
         )
 
     def _command_long_send(

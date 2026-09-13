@@ -13,21 +13,36 @@ import contextlib
 import math
 import threading
 import time
+from collections.abc import Callable
 from typing import Any
 
 from pymavlink import mavutil
 
-from mavctl.adapter.base import ConnectionLostError, ModeMappingUnavailableError
+from mavctl.adapter.base import (
+    ConnectionLostError,
+    MissionItemUnsupportedError,
+    MissionProtocolError,
+    MissionStateUncertainError,
+    ModeMappingUnavailableError,
+)
 from mavctl.models import (
+    MISSION_TYPE_MISSION,
     Attitude,
     Battery,
     CommandOutcome,
+    DownloadedMissionV1,
     GpsInfo,
     HomePosition,
+    MissionItem,
+    MissionOutcome,
+    MissionV1,
     Position,
     Telemetry,
     VehicleState,
     Velocity,
+    mission_item_from_remote,
+    mission_item_to_int_fields,
+    mission_result_name,
 )
 
 # Message types we subscribe to.
@@ -40,7 +55,36 @@ _SUBSCRIBED = (
     "COMMAND_ACK",
     "EXTENDED_SYS_STATE",
     "HOME_POSITION",
+    "MISSION_REQUEST_LIST",
+    "MISSION_COUNT",
+    "MISSION_CLEAR_ALL",
+    "MISSION_REQUEST_INT",
+    "MISSION_ITEM_INT",
+    "MISSION_ACK",
+    "MISSION_CURRENT",
+    "MISSION_ITEM_REACHED",
 )
+
+# Mission messages that participate in upload/download/clear transactions.
+# MISSION_CURRENT / MISSION_ITEM_REACHED are subscribed for completeness but
+# intentionally unused by the Phase 3A transactions.
+_MISSION_TRANSACTION_TYPES = frozenset({
+    "MISSION_REQUEST_LIST",
+    "MISSION_COUNT",
+    "MISSION_CLEAR_ALL",
+    "MISSION_REQUEST_INT",
+    "MISSION_ITEM_INT",
+    "MISSION_ACK",
+})
+
+# Mission transaction tuning (docs/design/mission-protocol-v1.md §D/E; the
+# vehicle's own upload timer is 8 s — ArduPilot MissionItemProtocol).
+_MISSION_REQUEST_TIMEOUT_S = 1.0
+_MISSION_RETRIES = 3
+_MISSION_TRANSACTION_TIMEOUT_S = 15.0
+_MISSION_ACK_WINDOW_S = 2.0
+_MISSION_CLEAR_RESENDS = 1
+_MISSION_COUNT_RESENDS = 2
 
 _GPS_FIX_LABELS = {
     0: "no_gps",
@@ -177,6 +221,16 @@ class PymavlinkAdapter:
         self._home_ts_mono: float | None = None
         self._landed_state_ts_mono: float | None = None
 
+        # Mission protocol transactions. _mission_lock serializes whole
+        # upload/download/clear sessions; _mission_cond + _mission_inbox are
+        # the reader-thread -> transaction rendezvous. Messages are only
+        # delivered while a session is active, so stale traffic can never
+        # satisfy a later transaction.
+        self._mission_lock = threading.Lock()
+        self._mission_cond = threading.Condition()
+        self._mission_active = False
+        self._mission_inbox: list[tuple[str, Any]] = []
+
     # -- lifecycle ---------------------------------------------------------
 
     def connect(self) -> None:
@@ -312,6 +366,343 @@ class PymavlinkAdapter:
     def rtl(self) -> CommandOutcome:
         return self._send_command(mavutil.mavlink.MAV_CMD_NAV_RETURN_TO_LAUNCH, [])
 
+    # -- mission transactions (Phase 3A) -----------------------------------
+    #
+    # State machines per docs/design/mission-protocol-v1.md §D/E/F. All three
+    # transactions serialize on _mission_lock; the reader thread delivers
+    # locked-autopilot MISSION_* messages into the session inbox; the
+    # COMMAND_ACK machinery is never involved.
+
+    def upload_mission(self, mission: MissionV1) -> MissionOutcome:
+        """Run the MAVLink mission upload transaction for a validated plan.
+
+        Phase model (design §D): U0 failures happen before this method is
+        reached; from U1 (``MISSION_COUNT`` sent) onward every abort raises
+        :class:`MissionStateUncertainError` — the vehicle may hold a partial
+        mission. The vehicle paces the transfer via ``MISSION_REQUEST_INT``
+        and terminates with ``MISSION_ACK`` (sent immediately after the last
+        item per the ArduPilot source).
+        """
+        master = self._master
+        if master is None:
+            raise ConnectionLostError("link is not open")
+        items = mission.items
+        count = len(items)
+        overall = time.monotonic() + _MISSION_TRANSACTION_TIMEOUT_S
+        accepted_upto: int | None = None
+
+        def uncertain(message: str) -> MissionStateUncertainError:
+            return MissionStateUncertainError(message, accepted_upto=accepted_upto)
+
+        def accept_request_or_ack(msg_type: str, msg: Any) -> bool:
+            if msg_type not in ("MISSION_REQUEST_INT", "MISSION_ACK"):
+                return False
+            return getattr(msg, "mission_type", MISSION_TYPE_MISSION) == MISSION_TYPE_MISSION
+
+        with self._mission_lock:
+            self._begin_mission_session()
+            try:
+                # U1: MISSION_COUNT sent, awaiting the first item request.
+                self._send_mission_count(master, count)
+                resends = 0
+                last_sent: int | None = None
+                while last_sent is None:
+                    until = min(overall, time.monotonic() + _MISSION_REQUEST_TIMEOUT_S)
+                    msg_type, msg = self._wait_mission(accept_request_or_ack, until)
+                    if msg is None:
+                        if time.monotonic() >= overall:
+                            raise uncertain("vehicle did not request mission items")
+                        resends += 1
+                        if resends > _MISSION_RETRIES:
+                            raise uncertain(
+                                "vehicle did not request mission items after retries"
+                            )
+                        self._send_mission_count(master, count)
+                        continue
+                    if msg_type == "MISSION_ACK":
+                        # The vehicle ended the session before any item was
+                        # stored; conservative uncertain after COUNT.
+                        result = int(msg.type)
+                        if result == 15:
+                            raise uncertain("vehicle cancelled the upload")
+                        raise uncertain(f"upload ended with {mission_result_name(result)}")
+                    seq = int(msg.seq)
+                    if seq < 0 or seq >= count:
+                        raise uncertain(f"vehicle requested out-of-range seq {seq}")
+                    self._send_mission_item(master, items[seq], seq)
+                    last_sent = seq
+                    resends = 0
+                # U2: item exchange. ArduPilot requests strictly in order but
+                # mavctl answers any in-range request and re-sends duplicates.
+                while last_sent < count - 1:
+                    until = min(overall, time.monotonic() + _MISSION_REQUEST_TIMEOUT_S)
+                    msg_type, msg = self._wait_mission(accept_request_or_ack, until)
+                    if msg is None:
+                        if time.monotonic() >= overall:
+                            raise uncertain("vehicle stopped requesting mission items")
+                        resends += 1
+                        if resends > _MISSION_RETRIES:
+                            raise uncertain(
+                                "vehicle stopped requesting mission items after retries"
+                            )
+                        # Re-send the last item: the vehicle is waiting for the
+                        # seq it requested, which is the one we last sent.
+                        self._send_mission_item(master, items[last_sent], last_sent)
+                        continue
+                    if msg_type == "MISSION_ACK":
+                        result = int(msg.type)
+                        if result == 15:
+                            raise uncertain("vehicle cancelled the upload")
+                        raise uncertain(
+                            f"unexpected mid-upload ACK {mission_result_name(result)}"
+                        )
+                    seq = int(msg.seq)
+                    if seq < 0 or seq >= count:
+                        raise uncertain(f"vehicle requested out-of-range seq {seq}")
+                    self._send_mission_item(master, items[seq], seq)
+                    resends = 0
+                    if seq > last_sent:
+                        accepted_upto = seq  # vehicle stored items 0..seq
+                    last_sent = max(last_sent, seq)
+                accepted_upto = count - 1
+                # U3: terminal ACK. The vehicle sends it immediately after the
+                # last item; keep listening until the overall deadline because
+                # its 8 s timer can still deliver OPERATION_CANCELLED.
+                while True:
+                    until = min(overall, time.monotonic() + _MISSION_ACK_WINDOW_S)
+                    msg_type, msg = self._wait_mission(accept_request_or_ack, until)
+                    if msg is None:
+                        if time.monotonic() >= overall:
+                            raise uncertain("terminal mission ACK not received")
+                        continue
+                    if msg_type == "MISSION_ACK":
+                        result = int(msg.type)
+                        if result == 0:
+                            return MissionOutcome(
+                                action="mission_upload",
+                                accepted=True,
+                                result_name="ACCEPTED",
+                                item_count=count,
+                                accepted_upto=count - 1,
+                            )
+                        if result == 15:
+                            raise uncertain("vehicle cancelled the upload")
+                        raise MissionProtocolError(
+                            f"mission upload rejected: {mission_result_name(result)}",
+                            result_name=mission_result_name(result),
+                        )
+                    seq = int(msg.seq)
+                    if 0 <= seq < count:
+                        # Late request after the last item: answer politely and
+                        # keep waiting for the ACK.
+                        self._send_mission_item(master, items[seq], seq)
+            finally:
+                self._end_mission_session()
+
+    def download_mission(self) -> DownloadedMissionV1:
+        """Read the remote mission atomically (design §E).
+
+        Any failure raises: a partial mission is never emitted. The GCS
+        terminal ACK is best-effort courtesy (ArduPilot does not consume it).
+        """
+        master = self._master
+        if master is None:
+            raise ConnectionLostError("link is not open")
+        overall = time.monotonic() + _MISSION_TRANSACTION_TIMEOUT_S
+
+        def accept_count_or_ack(msg_type: str, msg: Any) -> bool:
+            if msg_type not in ("MISSION_COUNT", "MISSION_ACK"):
+                return False
+            return getattr(msg, "mission_type", MISSION_TYPE_MISSION) == MISSION_TYPE_MISSION
+
+        def accept_item(msg_type: str, msg: Any) -> bool:
+            return msg_type == "MISSION_ITEM_INT" and (
+                getattr(msg, "mission_type", MISSION_TYPE_MISSION) == MISSION_TYPE_MISSION
+            )
+
+        with self._mission_lock:
+            self._begin_mission_session()
+            try:
+                self._send_mission_request_list(master)
+                count: int | None = None
+                resends = 0
+                while count is None:
+                    until = min(overall, time.monotonic() + _MISSION_REQUEST_TIMEOUT_S)
+                    msg_type, msg = self._wait_mission(accept_count_or_ack, until)
+                    if msg is None:
+                        if time.monotonic() >= overall:
+                            raise MissionProtocolError(
+                                "vehicle did not answer MISSION_REQUEST_LIST",
+                                result_name="TIMEOUT",
+                            )
+                        resends += 1
+                        if resends > _MISSION_COUNT_RESENDS:
+                            raise MissionProtocolError(
+                                "vehicle did not answer MISSION_REQUEST_LIST after retries",
+                                result_name="TIMEOUT",
+                            )
+                        self._send_mission_request_list(master)
+                        continue
+                    if msg_type == "MISSION_ACK":
+                        # Typically DENIED: a vehicle-side upload is in flight.
+                        result = int(msg.type)
+                        raise MissionProtocolError(
+                            f"vehicle denied mission download: {mission_result_name(result)}",
+                            result_name=mission_result_name(result),
+                        )
+                    count = int(msg.count)
+                if count == 0:
+                    self._send_mission_ack_accepted(master)
+                    return DownloadedMissionV1(version=1, items=[])
+                received: dict[int, Any] = {}
+                for seq in range(count):
+                    if seq in received:
+                        continue
+                    resends = 0
+                    while seq not in received:
+                        self._send_mission_request_int(master, seq)
+                        until = min(overall, time.monotonic() + _MISSION_REQUEST_TIMEOUT_S)
+                        msg_type, msg = self._wait_mission(accept_item, until)
+                        if msg is None:
+                            if time.monotonic() >= overall:
+                                raise MissionProtocolError(
+                                    f"mission download timed out at seq {seq} "
+                                    f"(received: {sorted(received)})",
+                                    result_name="TIMEOUT",
+                                )
+                            resends += 1
+                            if resends > _MISSION_RETRIES:
+                                raise MissionProtocolError(
+                                    f"mission download timed out at seq {seq} after "
+                                    f"retries (received: {sorted(received)})",
+                                    result_name="TIMEOUT",
+                                )
+                            continue
+                        iseq = int(msg.seq)
+                        if iseq == seq:
+                            received[seq] = msg
+                        elif 0 <= iseq < count and iseq not in received:
+                            received[iseq] = msg  # buffer out-of-order delivery
+                        # duplicates and out-of-range seqs are dropped
+                converted: list[MissionItem] = []
+                for seq in range(count):
+                    msg = received[seq]
+                    try:
+                        converted.append(
+                            mission_item_from_remote(
+                                seq=seq,
+                                command=int(msg.command),
+                                frame=int(msg.frame),
+                                param1=float(msg.param1),
+                                param2=float(msg.param2),
+                                param3=float(msg.param3),
+                                param4=float(msg.param4),
+                                x=int(msg.x),
+                                y=int(msg.y),
+                                z=float(msg.z),
+                            )
+                        )
+                    except ValueError as exc:
+                        raise MissionItemUnsupportedError(
+                            str(exc), seq=seq, command=int(msg.command), frame=int(msg.frame)
+                        ) from exc
+                self._send_mission_ack_accepted(master)
+                return DownloadedMissionV1(version=1, items=converted)
+            finally:
+                self._end_mission_session()
+
+    def clear_mission(self) -> MissionOutcome:
+        """Clear the remote mission and verify with a count read-back.
+
+        The read-back is mandatory: a silent success is never reported. A
+        non-zero observed count or a read-back timeout raises
+        :class:`MissionStateUncertainError` with ``observed_count`` when
+        known.
+        """
+        master = self._master
+        if master is None:
+            raise ConnectionLostError("link is not open")
+        overall = time.monotonic() + _MISSION_TRANSACTION_TIMEOUT_S
+
+        def accept_clear_ack(msg_type: str, msg: Any) -> bool:
+            return msg_type == "MISSION_ACK" and (
+                getattr(msg, "mission_type", MISSION_TYPE_MISSION) == MISSION_TYPE_MISSION
+            )
+
+        with self._mission_lock:
+            self._begin_mission_session()
+            try:
+                self._send_mission_clear_all(master)
+                resends = 0
+                while True:
+                    until = min(overall, time.monotonic() + _MISSION_REQUEST_TIMEOUT_S)
+                    _, msg = self._wait_mission(accept_clear_ack, until)
+                    if msg is None:
+                        if time.monotonic() >= overall:
+                            raise MissionStateUncertainError(
+                                "vehicle did not acknowledge MISSION_CLEAR_ALL"
+                            )
+                        resends += 1
+                        if resends > _MISSION_CLEAR_RESENDS:
+                            raise MissionStateUncertainError(
+                                "vehicle did not acknowledge MISSION_CLEAR_ALL "
+                                "after resend"
+                            )
+                        self._send_mission_clear_all(master)
+                        continue
+                    result = int(msg.type)
+                    if result != 0:
+                        raise MissionProtocolError(
+                            f"mission clear rejected: {mission_result_name(result)}",
+                            result_name=mission_result_name(result),
+                        )
+                    break
+                # Read-back verification inside the same mission session.
+                observed = self._request_count_locked(master, overall)
+                if observed != 0:
+                    raise MissionStateUncertainError(
+                        f"remote mission count {observed} after clear",
+                        observed_count=observed,
+                    )
+                return MissionOutcome(
+                    action="mission_clear",
+                    accepted=True,
+                    result_name="ACCEPTED",
+                    verified=True,
+                    observed_count=0,
+                )
+            finally:
+                self._end_mission_session()
+
+    def _request_count_locked(self, master: Any, overall: float) -> int:
+        """Read back the remote mission count; ``_mission_lock`` is held."""
+
+        def accept_count_or_ack(msg_type: str, msg: Any) -> bool:
+            if msg_type not in ("MISSION_COUNT", "MISSION_ACK"):
+                return False
+            return getattr(msg, "mission_type", MISSION_TYPE_MISSION) == MISSION_TYPE_MISSION
+
+        resends = 0
+        while True:
+            self._send_mission_request_list(master)
+            until = min(overall, time.monotonic() + _MISSION_REQUEST_TIMEOUT_S)
+            msg_type, msg = self._wait_mission(accept_count_or_ack, until)
+            if msg is None:
+                if time.monotonic() >= overall:
+                    raise MissionStateUncertainError("read-back timeout after mission clear")
+                resends += 1
+                if resends > _MISSION_COUNT_RESENDS:
+                    raise MissionStateUncertainError(
+                        "read-back timeout after mission clear (retries exhausted)"
+                    )
+                continue
+            if msg_type == "MISSION_ACK":
+                result = int(msg.type)
+                raise MissionStateUncertainError(
+                    f"vehicle denied mission read-back: {mission_result_name(result)}"
+                )
+            return int(msg.count)
+
     def _send_command(
         self,
         command: int,
@@ -404,6 +795,119 @@ class PymavlinkAdapter:
                 return {str(name): int(num) for name, num in mapping.items()}
         return {}
 
+    # -- mission session plumbing ------------------------------------------
+
+    def _begin_mission_session(self) -> None:
+        """Activate mission message delivery; drop any stale traffic."""
+
+        with self._mission_cond:
+            self._mission_active = True
+            self._mission_inbox.clear()
+
+    def _end_mission_session(self) -> None:
+        """Deactivate delivery and clear the inbox."""
+
+        with self._mission_cond:
+            self._mission_active = False
+            self._mission_inbox.clear()
+
+    def _deliver_mission(self, msg: Any) -> None:
+        """Route an inbound ``MISSION_*`` message to the active transaction.
+
+        Messages are dropped unless a transaction is running and the sender
+        is the locked autopilot — stale or foreign mission traffic can never
+        satisfy a later transaction.
+        """
+
+        if not self._mission_active or not self._is_locked_target(msg):
+            return
+        with self._mission_cond:
+            self._mission_inbox.append((msg.get_type(), msg))
+            self._mission_cond.notify_all()
+
+    def _wait_mission(
+        self,
+        accept: Callable[[str, Any], bool],
+        until: float,
+    ) -> tuple[str, Any] | tuple[None, None]:
+        """Wait for the next mission message accepted by ``accept``.
+
+        Accepted messages are consumed; rejected messages are dropped (the
+        transaction has decided they are irrelevant — e.g. a wrong
+        ``mission_type``). Returns ``(None, None)`` once ``until`` passes.
+        """
+
+        with self._mission_cond:
+            while True:
+                index = 0
+                while index < len(self._mission_inbox):
+                    msg_type, msg = self._mission_inbox[index]
+                    del self._mission_inbox[index]
+                    if accept(msg_type, msg):
+                        return msg_type, msg
+                    # rejected: dropped, index stays put
+                remaining = until - time.monotonic()
+                if remaining <= 0:
+                    return None, None
+                self._mission_cond.wait(timeout=min(remaining, 0.05))
+
+    def _send_mission_count(self, master: Any, count: int) -> None:
+        with self._send_lock:
+            master.mav.mission_count_send(
+                self._target_system, self._target_component, count, MISSION_TYPE_MISSION
+            )
+
+    def _send_mission_request_list(self, master: Any) -> None:
+        with self._send_lock:
+            master.mav.mission_request_list_send(
+                self._target_system, self._target_component, MISSION_TYPE_MISSION
+            )
+
+    def _send_mission_request_int(self, master: Any, seq: int) -> None:
+        with self._send_lock:
+            master.mav.mission_request_int_send(
+                self._target_system, self._target_component, seq, MISSION_TYPE_MISSION
+            )
+
+    def _send_mission_item(self, master: Any, item: MissionItem, seq: int) -> None:
+        fields = mission_item_to_int_fields(item)
+        with self._send_lock:
+            master.mav.mission_item_int_send(
+                self._target_system,
+                self._target_component,
+                seq,
+                fields.frame,
+                fields.command,
+                0,  # current
+                1,  # autocontinue
+                fields.param1,
+                fields.param2,
+                fields.param3,
+                fields.param4,
+                fields.x,
+                fields.y,
+                fields.z,
+                MISSION_TYPE_MISSION,
+            )
+
+    def _send_mission_clear_all(self, master: Any) -> None:
+        with self._send_lock:
+            master.mav.mission_clear_all_send(
+                self._target_system, self._target_component, MISSION_TYPE_MISSION
+            )
+
+    def _send_mission_ack_accepted(self, master: Any) -> None:
+        """Courtesy download-terminal ACK. Failures are non-fatal: ArduPilot
+        does not consume it ([FACT], GCS_Common.cpp ``/* not used */``)."""
+
+        with contextlib.suppress(Exception), self._send_lock:
+            master.mav.mission_ack_send(
+                self._target_system,
+                self._target_component,
+                0,  # MAV_MISSION_ACCEPTED
+                MISSION_TYPE_MISSION,
+            )
+
     # -- internals ---------------------------------------------------------
 
     def _heartbeat_age_locked(self) -> float | None:
@@ -428,6 +932,11 @@ class PymavlinkAdapter:
     def _handle_message(self, msg: Any) -> None:
         msg_type = msg.get_type()
         if msg_type == "BAD_DATA":
+            return
+        if msg_type in _MISSION_TRANSACTION_TYPES:
+            # MISSION_* traffic belongs to the mission transaction, never to
+            # the snapshot or the COMMAND_ACK machinery.
+            self._deliver_mission(msg)
             return
         handler = _HANDLERS.get(msg_type)
         if handler is not None:

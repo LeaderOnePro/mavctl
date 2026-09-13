@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from typing import Any
 
 import pytest
 from pydantic import ValidationError
@@ -25,7 +26,7 @@ from mavctl.models import (
 )
 
 
-def _four_item_mission() -> dict:
+def _four_item_mission() -> dict[str, Any]:
     return {
         "version": 1,
         "items": [
