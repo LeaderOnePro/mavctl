@@ -523,10 +523,13 @@ class PymavlinkAdapter:
         with self._mission_lock:
             self._begin_mission_session()
             try:
-                self._send_mission_request_list(master)
                 count: int | None = None
                 resends = 0
+                request_outstanding = False
                 while count is None:
+                    if not request_outstanding:
+                        self._send_mission_request_list(master)
+                        request_outstanding = True
                     until = min(overall, time.monotonic() + _MISSION_REQUEST_TIMEOUT_S)
                     msg_type, msg = self._wait_mission(accept_count_or_ack, until)
                     if msg is None:
@@ -541,7 +544,7 @@ class PymavlinkAdapter:
                                 "vehicle did not answer MISSION_REQUEST_LIST after retries",
                                 result_name="TIMEOUT",
                             )
-                        self._send_mission_request_list(master)
+                        request_outstanding = False  # re-request on timeout
                         continue
                     if msg_type == "MISSION_ACK":
                         # Typically DENIED: a vehicle-side upload is in flight.
@@ -554,13 +557,19 @@ class PymavlinkAdapter:
                 if count == 0:
                     self._send_mission_ack_accepted(master)
                     return DownloadedMissionV1(version=1, items=[])
+                converted: list[MissionItem] = []
                 received: dict[int, Any] = {}
                 for seq in range(count):
                     if seq in received:
+                        # buffered earlier by out-of-order delivery
+                        converted.append(self._convert_remote_item(received[seq], seq))
                         continue
                     resends = 0
+                    request_outstanding = False
                     while seq not in received:
-                        self._send_mission_request_int(master, seq)
+                        if not request_outstanding:
+                            self._send_mission_request_int(master, seq)
+                            request_outstanding = True
                         until = min(overall, time.monotonic() + _MISSION_REQUEST_TIMEOUT_S)
                         msg_type, msg = self._wait_mission(accept_item, until)
                         if msg is None:
@@ -577,35 +586,17 @@ class PymavlinkAdapter:
                                     f"retries (received: {sorted(received)})",
                                     result_name="TIMEOUT",
                                 )
+                            request_outstanding = False  # re-request on timeout
                             continue
                         iseq = int(msg.seq)
                         if iseq == seq:
+                            # Convert immediately: an unsupported item fails the
+                            # download atomically the moment it is identified.
+                            converted.append(self._convert_remote_item(msg, seq))
                             received[seq] = msg
                         elif 0 <= iseq < count and iseq not in received:
                             received[iseq] = msg  # buffer out-of-order delivery
                         # duplicates and out-of-range seqs are dropped
-                converted: list[MissionItem] = []
-                for seq in range(count):
-                    msg = received[seq]
-                    try:
-                        converted.append(
-                            mission_item_from_remote(
-                                seq=seq,
-                                command=int(msg.command),
-                                frame=int(msg.frame),
-                                param1=float(msg.param1),
-                                param2=float(msg.param2),
-                                param3=float(msg.param3),
-                                param4=float(msg.param4),
-                                x=int(msg.x),
-                                y=int(msg.y),
-                                z=float(msg.z),
-                            )
-                        )
-                    except ValueError as exc:
-                        raise MissionItemUnsupportedError(
-                            str(exc), seq=seq, command=int(msg.command), frame=int(msg.frame)
-                        ) from exc
                 self._send_mission_ack_accepted(master)
                 return DownloadedMissionV1(version=1, items=converted)
             finally:
@@ -674,6 +665,32 @@ class PymavlinkAdapter:
             finally:
                 self._end_mission_session()
 
+    def _convert_remote_item(self, msg: Any, seq: int) -> MissionItem:
+        """Convert a received ``MISSION_ITEM_INT`` to a semantic v1 item.
+
+        Raises :class:`MissionItemUnsupportedError` for frames/commands/fields
+        outside the v1 schema — download fails atomically instead of emitting
+        lossy JSON.
+        """
+
+        try:
+            return mission_item_from_remote(
+                seq=seq,
+                command=int(msg.command),
+                frame=int(msg.frame),
+                param1=float(msg.param1),
+                param2=float(msg.param2),
+                param3=float(msg.param3),
+                param4=float(msg.param4),
+                x=int(msg.x),
+                y=int(msg.y),
+                z=float(msg.z),
+            )
+        except ValueError as exc:
+            raise MissionItemUnsupportedError(
+                str(exc), seq=seq, command=int(msg.command), frame=int(msg.frame)
+            ) from exc
+
     def _request_count_locked(self, master: Any, overall: float) -> int:
         """Read back the remote mission count; ``_mission_lock`` is held."""
 
@@ -683,8 +700,11 @@ class PymavlinkAdapter:
             return getattr(msg, "mission_type", MISSION_TYPE_MISSION) == MISSION_TYPE_MISSION
 
         resends = 0
+        request_outstanding = False
         while True:
-            self._send_mission_request_list(master)
+            if not request_outstanding:
+                self._send_mission_request_list(master)
+                request_outstanding = True
             until = min(overall, time.monotonic() + _MISSION_REQUEST_TIMEOUT_S)
             msg_type, msg = self._wait_mission(accept_count_or_ack, until)
             if msg is None:
@@ -695,6 +715,7 @@ class PymavlinkAdapter:
                     raise MissionStateUncertainError(
                         "read-back timeout after mission clear (retries exhausted)"
                     )
+                request_outstanding = False  # re-request on timeout
                 continue
             if msg_type == "MISSION_ACK":
                 result = int(msg.type)
