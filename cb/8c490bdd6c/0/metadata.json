@@ -1,0 +1,129 @@
+{
+  "cli_version": "0.8.42",
+  "checkpoint_id": "cb8c490bdd6c",
+  "session_id": "b6de80a6-34b1-47ab-84b2-3733974d4a3e",
+  "strategy": "manual-commit",
+  "created_at": "2026-09-16T14:20:27.828988Z",
+  "branch": "feat/pypi-deployment-env",
+  "checkpoints_count": 7,
+  "save_step_count": 7,
+  "files_touched": [
+    ".github/workflows/publish.yml"
+  ],
+  "agent": "Claude Code",
+  "model": "claude-opus-5[1m]",
+  "turn_id": "55fb5d75d7c8",
+  "compact_transcript_start": 0,
+  "token_usage": {
+    "input_tokens": 1661740,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 1229799,
+    "output_tokens": 11593,
+    "api_call_count": 61
+  },
+  "session_metrics": {
+    "turn_count": 7
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-09-16T14:20:27.807957Z",
+    "agent_lines": 3,
+    "agent_removed": 3,
+    "human_added": 0,
+    "human_modified": 1,
+    "human_removed": 1,
+    "total_committed": 4,
+    "total_lines_changed": 8,
+    "agent_percentage": 75,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 579,
+      "user_lines_removed": 72,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0,
+      "user_added_per_file": {
+        ".freebuff/project-id": 1,
+        "src/mavctl/adapter/__init__.py": 13,
+        "src/mavctl/adapter/base.py": 3,
+        "src/mavctl/adapter/pymavlink_adapter.py": 176,
+        "src/mavctl/cli/app.py": 25,
+        "src/mavctl/daemon/__main__.py": 12,
+        "src/mavctl/daemon/process.py": 8,
+        "src/mavctl/daemon/server.py": 5,
+        "src/mavctl/models/__init__.py": 18,
+        "src/mavctl/models/link.py": 44,
+        "src/mavctl/models/mission.py": 61,
+        "tests/test_cli.py": 30,
+        "tests/test_daemon_entrypoint.py": 22,
+        "tests/test_mission_adapter.py": 158,
+        "tests/test_mission_sitl.py": 2,
+        "tests/test_sitl.py": 1
+      },
+      "user_removed_per_file": {
+        "src/mavctl/adapter/__init__.py": 2,
+        "src/mavctl/adapter/base.py": 1,
+        "src/mavctl/adapter/pymavlink_adapter.py": 38,
+        "src/mavctl/cli/app.py": 2,
+        "src/mavctl/daemon/process.py": 1,
+        "src/mavctl/daemon/server.py": 2,
+        "src/mavctl/models/mission.py": 1,
+        "tests/test_cli.py": 1,
+        "tests/test_daemon_entrypoint.py": 1,
+        "tests/test_mission_adapter.py": 20,
+        "tests/test_mission_sitl.py": 2,
+        "tests/test_sitl.py": 1
+      }
+    },
+    {
+      "checkpoint_number": 2,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 579,
+      "agent_lines_removed": 72
+    },
+    {
+      "checkpoint_number": 3,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 579,
+      "agent_lines_removed": 72
+    },
+    {
+      "checkpoint_number": 4,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 579,
+      "agent_lines_removed": 72
+    },
+    {
+      "checkpoint_number": 5,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 584,
+      "agent_lines_removed": 75
+    },
+    {
+      "checkpoint_number": 6,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 584,
+      "agent_lines_removed": 75
+    },
+    {
+      "checkpoint_number": 7,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 584,
+      "agent_lines_removed": 75
+    },
+    {
+      "checkpoint_number": 8,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 584,
+      "agent_lines_removed": 75
+    }
+  ]
+}

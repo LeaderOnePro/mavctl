@@ -1,0 +1,35 @@
+暂且不用测试功能了，我现在想问一个问题，这个项目当前也打包发到 PyPI 上了，为什么在 Deployments 子项里没有看到像 https://github.com/vllm-project/agentic-api 一样的 pypi 一条？
+
+---
+
+加，等等，我先问一句，加完之后能立即看到效果吗？之前的发布记录会出现吗？还是说我必须发下一版才能看到 Deployments 里出现记录？
+
+---
+
+B，另外给我解释一下当前加代码方法和 agentic-api 项目是否一致
+
+---
+
+改
+
+---
+
+你看看我的 GitHub Environment 现在配置对不对？只添加了一个名为 pypi 的 environment，这就够了吗？
+然后 PyPI Trusted Publisher如下，没有找到有修改 Environment 字段的选项？
+Manage current publishers
+
+OpenID Connect publishers associated with mavctl
+Publisher    Details    
+GitHub    
+Repository: LeaderOnePro/mavctl
+Workflow: publish.yml
+Environment name: (Any)
+Remove
+
+---
+
+OK了！
+
+---
+
+等等，你推送了吗？
