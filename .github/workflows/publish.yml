@@ -11,9 +11,7 @@ name: Publish to PyPI
 #        Owner             : LeaderOnePro
 #        Repository        : mavctl
 #        Workflow filename : publish.yml
-#        Environment       : leave empty (no environment is used here);
-#                            if you ever add `environment:` below, the name
-#                            on PyPI must match exactly.
+#        Environment       : pypi  (must match environment.name below)
 #   2. Rehearse on TestPyPI first and validate dist/ locally — see
 #      docs/PUBLISHING.md before cutting the first real vX.Y.Z tag.
 #
@@ -31,6 +29,9 @@ permissions:
 jobs:
   publish:
     runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/mavctl/
     permissions:
       id-token: write # OIDC identity for PyPI Trusted Publishing
     steps:
