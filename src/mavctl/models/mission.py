@@ -369,9 +369,9 @@ def mission_item_from_remote(
     def _unsupported(why: str) -> UnsupportedRemoteMissionItem:
         return UnsupportedRemoteMissionItem(f"seq {seq}: {why}")
 
-    if frame not in (MISSION_FRAME_GLOBAL_RELATIVE_ALT, MISSION_FRAME_GLOBAL_RELATIVE_ALT_INT) and not (
-        command == MISSION_COMMAND_RETURN_TO_LAUNCH and frame == MISSION_FRAME_GLOBAL
-    ):
+    _relative = (MISSION_FRAME_GLOBAL_RELATIVE_ALT, MISSION_FRAME_GLOBAL_RELATIVE_ALT_INT)
+    _rtl_abs = command == MISSION_COMMAND_RETURN_TO_LAUNCH and frame == MISSION_FRAME_GLOBAL
+    if frame not in _relative and not _rtl_abs:
         raise _unsupported(f"unsupported frame {frame}")
     try:
         if command == MISSION_COMMAND_TAKEOFF:
