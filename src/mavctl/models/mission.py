@@ -30,8 +30,20 @@ MISSION_COMMAND_WAYPOINT = 16
 MISSION_COMMAND_RETURN_TO_LAUNCH = 20
 MISSION_COMMAND_LAND = 21
 MISSION_COMMAND_TAKEOFF = 22
+MISSION_FRAME_GLOBAL_RELATIVE_ALT = 3
 MISSION_FRAME_GLOBAL_RELATIVE_ALT_INT = 6
+MISSION_FRAME_GLOBAL = 0
 MISSION_TYPE_MISSION = 0
+
+# ArduPilot mission wire convention ([FACT] AP_Mission / MissionItemProtocol):
+# storage slot 0 is the vehicle HOME (a MAV_CMD_NAV_WAYPOINT emitted in the
+# GLOBAL MSL frame); it is auto-inserted on the first appended item
+# (AP_Mission::add_cmd), writes to slot 0 are silently ignored
+# (AP_Mission::replace_cmd), and downloads always expose home as seq 0
+# (MissionItemProtocol_Waypoints::get_item "always allow HOME to be read").
+# mavctl therefore transfers its v1 items in wire sequence space 1..N.
+ARDUPILOT_HOME_SLOT_SEQ = 0
+"""Wire sequence of the vehicle-managed home slot on ArduPilot."""
 
 MISSION_RESULT_NAMES: dict[int, str] = {
     0: "ACCEPTED",
@@ -273,6 +285,48 @@ def mission_item_to_int_fields(item: MissionItem) -> MissionItemIntFields:
     )
 
 
+def home_slot_int_fields() -> MissionItemIntFields:
+    """Build the wire item mavctl sends for the ArduPilot home slot (seq 0).
+
+    ArduPilot never stores this wire item's content: on a non-empty mission
+    ``AP_Mission::replace_cmd(0)`` is a documented no-op ("writing index zero
+    is not allowed, it must be home"), and on a cleared mission the first
+    append auto-writes home to slot 0 and the item lands in slot 1, where the
+    first real v1 item immediately replaces it. The content is therefore a
+    canonical, inert waypoint; it exists purely to satisfy the strict
+    in-order item transfer the vehicle drives.
+    """
+
+    return MissionItemIntFields(
+        command=MISSION_COMMAND_WAYPOINT,
+        param1=0.0,
+        param2=0.0,
+        param3=0.0,
+        param4=0.0,
+        x=0,
+        y=0,
+        z=0.0,
+    )
+
+
+def is_home_slot_item(
+    *,
+    command: int,
+    frame: int,
+) -> bool:
+    """Recognize the vehicle-managed home entry at download seq 0.
+
+    ArduPilot stores home as a ``MAV_CMD_NAV_WAYPOINT`` and emits it in the
+    GLOBAL (MSL) frame — ``mission_cmd_to_mavlink_int`` sets frame 0 for any
+    non-relative location [FACT, SITL-verified]. A v1 item can never have
+    this signature (v1 emits relative frames only), so a seq-0 item that does
+    not match is treated as a real first item of a non-ArduPilot-convention
+    vehicle and fails the download atomically instead of being misread.
+    """
+
+    return command == MISSION_COMMAND_WAYPOINT and frame == MISSION_FRAME_GLOBAL
+
+
 def mission_item_from_remote(
     *,
     seq: int,
@@ -295,6 +349,15 @@ def mission_item_from_remote(
     item unsupported — download fails atomically instead of silently
     dropping a non-default behaviour.
 
+    Frames: both relative-altitude encodings are accepted as equivalent —
+    MAV_FRAME_GLOBAL_RELATIVE_ALT_INT (6, what mavctl sends) and
+    MAV_FRAME_GLOBAL_RELATIVE_ALT (3, what ArduPilot emits back in
+    ``mission_cmd_to_mavlink_int`` [FACT]). They denote the same frame for
+    integer messages. RTL additionally accepts frame 0 (GLOBAL MSL): its
+    position is ignored by the vehicle, so the frame encodes no v1-relevant
+    information ([FACT] ArduPilot stores RTL with x=0/y=0 as absolute and
+    emits frame 0 back).
+
     Raises:
         UnsupportedRemoteMissionItem: if the frame or command is outside the
             v1 whitelist, a parameter that v1 does not express is non-default,
@@ -306,7 +369,9 @@ def mission_item_from_remote(
     def _unsupported(why: str) -> UnsupportedRemoteMissionItem:
         return UnsupportedRemoteMissionItem(f"seq {seq}: {why}")
 
-    if frame != MISSION_FRAME_GLOBAL_RELATIVE_ALT_INT:
+    if frame not in (MISSION_FRAME_GLOBAL_RELATIVE_ALT, MISSION_FRAME_GLOBAL_RELATIVE_ALT_INT) and not (
+        command == MISSION_COMMAND_RETURN_TO_LAUNCH and frame == MISSION_FRAME_GLOBAL
+    ):
         raise _unsupported(f"unsupported frame {frame}")
     try:
         if command == MISSION_COMMAND_TAKEOFF:
@@ -351,7 +416,12 @@ def mission_item_from_remote(
         if command == MISSION_COMMAND_RETURN_TO_LAUNCH:
             # All params are "Empty" per the XML and the location is ignored
             # by the vehicle (do_RTL takes no location), so only the params
-            # must be canonical zeros for the item to round-trip.
+            # must be canonical zeros for the item to round-trip. The frame
+            # is wire-preserved but semantically ignored: ArduPilot stores
+            # x=0/y=0 as an absolute location, so it emits frame 0 (GLOBAL
+            # MSL) on download [FACT, SITL-verified] even though mavctl sent
+            # frame 6 — either encoding is accepted because the position
+            # plays no role in RTL execution.
             if (param1, param2, param3, param4) != (0.0, 0.0, 0.0, 0.0):
                 raise _unsupported("non-default rtl parameters (param1..4)")
             return MissionRtl()

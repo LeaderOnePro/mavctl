@@ -60,7 +60,9 @@ class MissionStateUncertainError(MissionProtocolError):
     vehicle; failures before that are plain :class:`MissionProtocolError`.
 
     ``sent_upto`` is the highest sequence number mavctl **locally sent** —
-    it is not a vehicle-confirmed acceptance.
+    it is not a vehicle-confirmed acceptance. It is expressed in the MAVLink
+    wire sequence space, which on ArduPilot includes the vehicle-managed home
+    slot at seq 0 (mavctl's v1 items occupy wire seqs 1..N).
     """
 
     def __init__(

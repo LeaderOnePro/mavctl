@@ -231,8 +231,10 @@ async def test_mission_download_unsupported_item_maps_to_exit_6() -> None:
 
 
 async def test_mission_download_count_over_limit_maps_to_exit_6() -> None:
+    # observed_count is the WIRE count (home slot included); the error detail
+    # reports v1 items (wire - 1).
     error = MissionCountUnsupportedError(
-        "remote mission has 101 items", observed_count=101, max_supported_items=100
+        "remote mission has 102 items", observed_count=102, max_supported_items=100
     )
     adapter = _ScriptedMissionAdapter(_grounded_state(), error=error)
     server = DaemonServer(adapter, "udp:127.0.0.1:14550")

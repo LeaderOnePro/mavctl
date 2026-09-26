@@ -321,11 +321,26 @@ def test_remote_unsupported_command_rejected() -> None:
 
 
 def test_remote_unsupported_frame_rejected() -> None:
-    with pytest.raises(ValueError, match="unsupported frame 3"):
+    with pytest.raises(ValueError, match="unsupported frame 2"):
         mission_item_from_remote(
-            seq=0, command=MISSION_COMMAND_WAYPOINT, frame=3,
+            seq=0, command=MISSION_COMMAND_WAYPOINT, frame=2,
             param1=0.0, param2=0.0, param3=0.0, param4=0.0, x=1, y=2, z=3.0,
         )
+
+
+def test_remote_relative_alt_frame_equivalence() -> None:
+    """MAV_FRAME_GLOBAL_RELATIVE_ALT (3) and ..._INT (6) denote the same
+    frame for integer messages; ArduPilot emits frame 3 on download ([FACT]
+    mission_cmd_to_mavlink_int)."""
+    from_frame3 = mission_item_from_remote(
+        seq=1, command=MISSION_COMMAND_WAYPOINT, frame=3,
+        param1=0.0, param2=0.0, param3=0.0, param4=0.0, x=10000000, y=20000000, z=30.0,
+    )
+    from_frame6 = mission_item_from_remote(
+        seq=1, command=MISSION_COMMAND_WAYPOINT, frame=6,
+        param1=0.0, param2=0.0, param3=0.0, param4=0.0, x=10000000, y=20000000, z=30.0,
+    )
+    assert from_frame3 == from_frame6
 
 
 # -- lossless policy: v1-unexpressed non-default parameters --------------------

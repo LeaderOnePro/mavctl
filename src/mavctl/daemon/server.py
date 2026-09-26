@@ -264,13 +264,16 @@ class DaemonServer:
                 },
             )
         except MissionCountUnsupportedError as exc:
+            # observed_count is the wire count, which on ArduPilot includes the
+            # vehicle-managed home slot (seq 0); v1 items = wire count - 1.
+            v1_items = max(exc.observed_count - 1, 0)
             return DaemonResponse.failure(
                 ExitCode.NACK_TIMEOUT,
-                f"remote mission has {exc.observed_count} items; mavctl v1 "
+                f"remote mission has {v1_items} items; mavctl v1 "
                 f"supports at most {exc.max_supported_items}",
                 {
                     "reason": "mission_item_unsupported",
-                    "observed_count": exc.observed_count,
+                    "observed_count": v1_items,
                     "max_supported_items": exc.max_supported_items,
                 },
             )
