@@ -82,7 +82,7 @@ def daemon(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     monkeypatch.setenv("MAVCTL_HOME", home)
     if process.is_running():
         process.stop()
-    process.spawn(_CONNECT, heartbeat_timeout=3.0)
+    process.spawn(_CONNECT, heartbeat_timeout=3.0, source_system=254)
     try:
         yield
     finally:

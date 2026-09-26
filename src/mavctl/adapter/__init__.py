@@ -6,9 +6,15 @@ MAVLink transport swappable and testable.
 """
 
 from mavctl.adapter.base import AdapterError, ConnectionLostError, VehicleAdapter
+from mavctl.models import DEFAULT_GCS_SOURCE_COMPONENT, DEFAULT_GCS_SOURCE_SYSTEM
 
 
-def create_adapter(connection_string: str, heartbeat_timeout_s: float = 3.0) -> VehicleAdapter:
+def create_adapter(
+    connection_string: str,
+    heartbeat_timeout_s: float = 3.0,
+    source_system: int = DEFAULT_GCS_SOURCE_SYSTEM,
+    source_component: int = DEFAULT_GCS_SOURCE_COMPONENT,
+) -> VehicleAdapter:
     """Build the default (pymavlink-backed) adapter.
 
     Imported lazily so pymavlink stays confined to this layer and is only
@@ -17,7 +23,12 @@ def create_adapter(connection_string: str, heartbeat_timeout_s: float = 3.0) -> 
 
     from mavctl.adapter.pymavlink_adapter import PymavlinkAdapter
 
-    return PymavlinkAdapter(connection_string, heartbeat_timeout_s=heartbeat_timeout_s)
+    return PymavlinkAdapter(
+        connection_string,
+        heartbeat_timeout_s=heartbeat_timeout_s,
+        source_system=source_system,
+        source_component=source_component,
+    )
 
 
 __all__ = [

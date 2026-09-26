@@ -27,6 +27,9 @@ from mavctl.adapter.base import (
     ModeMappingUnavailableError,
 )
 from mavctl.models import (
+    ARDUPILOT_HOME_SLOT_SEQ,
+    DEFAULT_GCS_SOURCE_COMPONENT,
+    DEFAULT_GCS_SOURCE_SYSTEM,
     MISSION_MAX_ITEMS,
     MISSION_TYPE_MISSION,
     Attitude,
@@ -36,12 +39,15 @@ from mavctl.models import (
     GpsInfo,
     HomePosition,
     MissionItem,
+    MissionItemIntFields,
     MissionOutcome,
     MissionV1,
     Position,
     Telemetry,
     VehicleState,
     Velocity,
+    home_slot_int_fields,
+    is_home_slot_item,
     mission_item_from_remote,
     mission_item_to_int_fields,
     mission_result_name,
@@ -109,6 +115,17 @@ _MISSION_TRANSACTION_TIMEOUT_S = 15.0
 _MISSION_ACK_WINDOW_S = 2.0
 _MISSION_CLEAR_RESENDS = 1
 _MISSION_COUNT_RESENDS = 2
+# MISSION_ACK result the vehicle returns when a received item's seq does not
+# match its expected request index (ArduPilot MissionItemProtocol
+# handle_mission_item [FACT]); the upload session stays alive.
+_MAV_MISSION_INVALID_SEQUENCE = 13
+# GCS-side suppression window for a re-request of an item that was just sent.
+# Grounded [FACT]: ArduPilot re-requests an item at most once per second
+# (wp_recv_timeout_ms = 1000 ms + stream slowdown), so a duplicate request
+# arriving sooner can only be a relay/transport duplicate — answering it with
+# a re-send would deterministically hit INVALID_SEQUENCE. Genuine loss is
+# still recovered: the vehicle's own retry re-requests after >= 1 s.
+_MISSION_DUPLICATE_REQUEST_DEBOUNCE_S = 0.25
 
 _GPS_FIX_LABELS = {
     0: "no_gps",
@@ -157,7 +174,10 @@ class PymavlinkAdapter:
         connection_string: mavutil-style connection, e.g. ``udp:127.0.0.1:14550``.
         heartbeat_timeout_s: link is considered lost if no HEARTBEAT arrives
             within this many seconds.
-        source_system: MAVLink source system id for this GCS.
+        source_system: MAVLink source system id for this GCS. Defaults to a
+            distinct id (see :data:`DEFAULT_GCS_SOURCE_SYSTEM`) so mavctl can
+            coexist with a conventional GCS on 255.
+        source_component: MAVLink source component id for this GCS.
         command_ack_timeout_s: seconds to wait for a COMMAND_ACK per attempt.
         command_retries: how many times to (re)send a command awaiting its ACK.
     """
@@ -166,7 +186,8 @@ class PymavlinkAdapter:
         self,
         connection_string: str,
         heartbeat_timeout_s: float = 3.0,
-        source_system: int = 255,
+        source_system: int = DEFAULT_GCS_SOURCE_SYSTEM,
+        source_component: int = DEFAULT_GCS_SOURCE_COMPONENT,
         command_ack_timeout_s: float = 5.0,
         command_retries: int = 3,
         command_ack_settle_s: float = 1.0,
@@ -174,6 +195,7 @@ class PymavlinkAdapter:
         self._connection_string = connection_string
         self._heartbeat_timeout_s = heartbeat_timeout_s
         self._source_system = source_system
+        self._source_component = source_component
         self._command_ack_timeout_s = command_ack_timeout_s
         self._command_retries = command_retries
         # Post-timeout quiet window for a command id (see _send_command).
@@ -271,6 +293,7 @@ class PymavlinkAdapter:
             self._master = mavutil.mavlink_connection(
                 self._connection_string,
                 source_system=self._source_system,
+                source_component=self._source_component,
             )
         except Exception as exc:
             raise ConnectionLostError(
@@ -415,17 +438,50 @@ class PymavlinkAdapter:
         Phase model (design §D): from ``MISSION_COUNT`` onward every abort
         raises :class:`MissionStateUncertainError` — the vehicle may hold a
         partial mission.
+
+        ArduPilot wire convention (design §C, SITL-verified [FACT]): storage
+        slot 0 is the vehicle-managed home entry; mavctl therefore announces
+        ``count = N + 1`` and transfers an inert home-slot placeholder at wire
+        seq 0 followed by the v1 items at wire seqs 1..N (ArduPilot silently
+        ignores writes to slot 0 — ``AP_Mission::replace_cmd`` — so the
+        placeholder never persists). ``sent_upto`` and sequence-gap details
+        are expressed in this wire sequence space.
+
+        Relay-duplicate tolerance (design §D "duplication convergence"): a
+        MAVLink relay (e.g. MAVProxy in front of a shared telemetry port) can
+        duplicate every packet in both directions. mavctl therefore
+
+        - answers only explicit vehicle requests (strict ordering, unchanged);
+        - suppresses re-sends for a request that duplicates one answered within
+          :data:`_MISSION_DUPLICATE_REQUEST_DEBOUNCE_S` (a vehicle never
+          re-requests that fast — a sooner duplicate is transport noise);
+        - tolerates ``MISSION_ACK(INVALID_SEQUENCE)`` (a duplicate item the
+          vehicle had already accepted rejected on re-delivery; the vehicle's
+          upload session survives it [FACT]) and a premature
+          ``MISSION_ACK(ACCEPTED)`` (typically a stale duplicate of the
+          previous transaction's terminal ACK) by continuing to answer
+          requests; a genuinely broken transfer still terminates in the
+          overall-deadline timeout, which remains ``uncertain``.
         """
         master = self._master
         if master is None:
             raise ConnectionLostError("link is not open")
-        items = mission.items
-        count = len(items)
+        v1_items = mission.items
+        v1_count = len(v1_items)
+        # Wire space: home slot + one entry per v1 item (ArduPilot convention).
+        wire_items: list[MissionItemIntFields] = [
+            home_slot_int_fields(),
+            *(mission_item_to_int_fields(item) for item in v1_items),
+        ]
+        count = len(wire_items)
         overall = time.monotonic() + _MISSION_TRANSACTION_TIMEOUT_S
         sent_upto: int | None = None
         items_sent = 0
         expected_next_seq = 0
         last_sent_seq: int | None = None
+        # seq -> monotonic time of the latest send, feeding the duplicate
+        # request debounce.
+        last_sent_at: dict[int, float] = {}
 
         def uncertain(message: str) -> MissionStateUncertainError:
             return MissionStateUncertainError(message, sent_upto=sent_upto)
@@ -477,19 +533,31 @@ class PymavlinkAdapter:
                         self._send_mission_count(master, count)
                         continue
                     if msg_type == "MISSION_ACK":
-                        # Phase-aware ACK mapping. Before any item is sent the
-                        # vehicle cannot have stored anything, so a rejection
-                        # is clean; once items are stored the remote mission
-                        # is already modified and the outcome must be treated
-                        # as uncertain (ArduPilot does not roll back accepted
-                        # items on a later error ACK).
                         result = int(msg.type)
                         if result == 0:
-                            # Premature ACCEPTED: protocol anomaly — the
-                            # vehicle accepted fewer items than announced.
-                            raise uncertain(
-                                f"premature mission ACK after {items_sent} item(s)"
-                            )
+                            # Premature ACCEPTED (fewer items requested than
+                            # announced): in a duplicating relay this is
+                            # typically a stale duplicate of the previous
+                            # transaction's terminal ACK — tolerate and keep
+                            # answering requests. A genuinely premature
+                            # ACCEPTED stalls the transfer into the overall
+                            # deadline, which still ends uncertain.
+                            continue
+                        if result == _MAV_MISSION_INVALID_SEQUENCE:
+                            # A re-delivered duplicate item the vehicle had
+                            # already accepted. ArduPilot keeps the upload
+                            # session alive on INVALID_SEQUENCE ([FACT]
+                            # handle_mission_item early-returns without
+                            # touching the session state), so tolerate and
+                            # keep answering requests.
+                            continue
+                        # Phase-aware ACK mapping for genuine rejections.
+                        # Before any item is sent the vehicle cannot have
+                        # stored anything, so a rejection is clean; once items
+                        # are stored the remote mission is already modified
+                        # and the outcome must be treated as uncertain
+                        # (ArduPilot does not roll back accepted items on a
+                        # later error ACK).
                         if items_sent == 0:
                             raise MissionProtocolError(
                                 f"mission upload rejected: {mission_result_name(result)}",
@@ -518,17 +586,29 @@ class PymavlinkAdapter:
                             requested_seq=seq,
                             sent_upto=sent_upto,
                         )
-                    # seq == expected: the expected item — send and advance.
-                    # seq < expected: explicit duplicate request — re-send the
-                    # already-sent item without advancing (the ONLY resend
-                    # trigger; retry is request-driven).
-                    self._send_mission_item(master, items[seq], seq)
-                    last_sent_seq = seq
-                    items_sent += 1
                     if seq == expected_next_seq:
+                        # The expected item — send and advance.
+                        self._send_mission_item(master, wire_items[seq], seq)
+                        last_sent_at[seq] = time.monotonic()
+                        last_sent_seq = seq
+                        items_sent += 1
                         sent_upto = seq
                         expected_next_seq = seq + 1
-                    resends = 0
+                        resends = 0
+                    else:
+                        # seq < expected: duplicate request. Suppress the
+                        # re-send when this seq was just sent — a vehicle
+                        # re-requests at most once per second, so a sooner
+                        # duplicate is relay/transport noise and answering it
+                        # would deterministically draw INVALID_SEQUENCE.
+                        # An older duplicate is genuine loss recovery.
+                        age = time.monotonic() - last_sent_at.get(seq, -math.inf)
+                        if age < _MISSION_DUPLICATE_REQUEST_DEBOUNCE_S:
+                            continue
+                        self._send_mission_item(master, wire_items[seq], seq)
+                        last_sent_at[seq] = time.monotonic()
+                        last_sent_seq = seq
+                        resends = 0
                 sent_upto = count - 1
                 # Terminal ACK. The vehicle sends it immediately after the last
                 # item; keep listening until the overall deadline because its
@@ -548,9 +628,15 @@ class PymavlinkAdapter:
                                 action="mission_upload",
                                 accepted=True,
                                 result_name="ACCEPTED",
-                                item_count=count,
+                                item_count=v1_count,
                                 sent_upto=count - 1,
                             )
+                        if result == _MAV_MISSION_INVALID_SEQUENCE:
+                            # A duplicate item was re-delivered inside the
+                            # terminal window and rejected; the vehicle's
+                            # session is intact — keep waiting for the real
+                            # terminal ACK until the overall deadline.
+                            continue
                         # U3: every item was already sent and stored — any
                         # non-ACCEPTED result (including the vehicle's 8 s
                         # OPERATION_CANCELLED) leaves the remote mission
@@ -562,7 +648,7 @@ class PymavlinkAdapter:
                         )
                     seq = int(msg.seq)
                     if 0 <= seq < count:
-                        self._send_mission_item(master, items[seq], seq)
+                        self._send_mission_item(master, wire_items[seq], seq)
             finally:
                 self._end_mission_session()
 
@@ -571,6 +657,13 @@ class PymavlinkAdapter:
 
         Any failure raises: a partial mission is never emitted. The GCS
         terminal ACK is best-effort courtesy (ArduPilot does not consume it).
+
+        ArduPilot wire convention (SITL-verified [FACT]): the download exposes
+        the vehicle-managed home entry at seq 0 and the mission items at seqs
+        1..N. mavctl requests and validates every seq: a seq-0 item that is
+        not home-shaped (``MAV_CMD_NAV_WAYPOINT`` in the GLOBAL MSL frame)
+        means the vehicle does not follow the ArduPilot convention and the
+        download fails atomically rather than misinterpreting the mission.
         """
         master = self._master
         if master is None:
@@ -614,24 +707,34 @@ class PymavlinkAdapter:
                         request_outstanding = False  # re-request on timeout
                         continue
                     if msg_type == "MISSION_ACK":
-                        # Typically DENIED: a vehicle-side upload is in flight.
                         result = int(msg.type)
+                        if result in (0, _MAV_MISSION_INVALID_SEQUENCE):
+                            # A MISSION_ACK is never a genuine answer to a
+                            # mission download request. ACCEPTED (and a stray
+                            # INVALID_SEQUENCE) here is a stale duplicate of a
+                            # previous transaction's terminal ACK — common on
+                            # a duplicating relay; tolerate and keep waiting
+                            # for the COUNT.
+                            continue
+                        # Typically DENIED: a vehicle-side upload is in flight.
                         raise MissionProtocolError(
                             f"vehicle denied mission download: {mission_result_name(result)}",
                             result_name=mission_result_name(result),
                         )
                     count = int(msg.count)
-                if count > MISSION_MAX_ITEMS:
-                    # Fail before requesting anything: v1 cannot represent a
-                    # mission this large, and issuing 100+ item requests would
-                    # only churn the link before failing anyway.
+                # The wire count includes the vehicle-managed home slot (seq 0),
+                # so the v1 item budget is count - 1. Fail before requesting
+                # anything: v1 cannot represent a mission this large, and
+                # issuing 100+ item requests would only churn the link.
+                if count - 1 > MISSION_MAX_ITEMS:
                     raise MissionCountUnsupportedError(
-                        f"remote mission has {count} items; mavctl v1 supports "
+                        f"remote mission has {count - 1} items; mavctl v1 supports "
                         f"at most {MISSION_MAX_ITEMS}",
                         observed_count=count,
                         max_supported_items=MISSION_MAX_ITEMS,
                     )
-                if count == 0:
+                if count <= 1:
+                    # 0 = cleared / never set; 1 = home slot only: no v1 items.
                     self._send_mission_ack_accepted(master)
                     return DownloadedMissionV1(version=1, items=[])
                 converted: list[MissionItem] = []
@@ -639,7 +742,10 @@ class PymavlinkAdapter:
                 for seq in range(count):
                     if seq in received:
                         # buffered earlier by out-of-order delivery
-                        converted.append(self._convert_remote_item(received[seq], seq))
+                        if seq == ARDUPILOT_HOME_SLOT_SEQ:
+                            self._check_home_slot_item(received[seq])
+                        else:
+                            converted.append(self._convert_remote_item(received[seq], seq))
                         continue
                     resends = 0
                     request_outstanding = False
@@ -667,9 +773,15 @@ class PymavlinkAdapter:
                             continue
                         iseq = int(msg.seq)
                         if iseq == seq:
-                            # Convert immediately: an unsupported item fails the
-                            # download atomically the moment it is identified.
-                            converted.append(self._convert_remote_item(msg, seq))
+                            if seq == ARDUPILOT_HOME_SLOT_SEQ:
+                                # Validate the home slot before discarding it:
+                                # anything else at seq 0 means the vehicle does
+                                # not follow the ArduPilot convention.
+                                self._check_home_slot_item(msg)
+                            else:
+                                # Convert immediately: an unsupported item fails
+                                # the download atomically once identified.
+                                converted.append(self._convert_remote_item(msg, seq))
                             received[seq] = msg
                         elif 0 <= iseq < count and iseq not in received:
                             received[iseq] = msg  # buffer out-of-order delivery
@@ -678,6 +790,20 @@ class PymavlinkAdapter:
                 return DownloadedMissionV1(version=1, items=converted)
             finally:
                 self._end_mission_session()
+
+    def _check_home_slot_item(self, msg: Any) -> None:
+        """Fail the download atomically if download seq 0 is not home-shaped."""
+
+        if is_home_slot_item(command=int(msg.command), frame=int(msg.frame)):
+            return
+        raise MissionItemUnsupportedError(
+            "downloaded seq 0 is not the ArduPilot home slot "
+            "(expected MAV_CMD_NAV_WAYPOINT in the GLOBAL frame); the vehicle "
+            "does not follow the ArduPilot mission wire convention",
+            seq=0,
+            command=int(msg.command),
+            frame=int(msg.frame),
+        )
 
     def clear_mission(self) -> MissionOutcome:
         """Clear the remote mission and verify with a count read-back.
@@ -719,6 +845,12 @@ class PymavlinkAdapter:
                         self._send_mission_clear_all(master)
                         continue
                     result = int(msg.type)
+                    if result == _MAV_MISSION_INVALID_SEQUENCE:
+                        # A stray INVALID_SEQUENCE copy (e.g. relay-duplicated
+                        # residue of an aborted upload) says nothing about the
+                        # clear outcome; the mandatory count read-back below
+                        # is the authoritative verification.
+                        continue
                     if result != 0:
                         raise MissionProtocolError(
                             f"mission clear rejected: {mission_result_name(result)}",
@@ -796,6 +928,13 @@ class PymavlinkAdapter:
                 continue
             if msg_type == "MISSION_ACK":
                 result = int(msg.type)
+                if result in (0, _MAV_MISSION_INVALID_SEQUENCE):
+                    # An ACCEPTED (or stray INVALID_SEQUENCE) during read-back
+                    # is a stale terminal-ACK duplicate from the preceding
+                    # transaction — typical on a duplicating relay, never a
+                    # genuine answer to MISSION_REQUEST_LIST. Keep waiting for
+                    # the COUNT.
+                    continue
                 raise MissionStateUncertainError(
                     f"vehicle denied mission read-back: {mission_result_name(result)}"
                 )
@@ -1006,8 +1145,7 @@ class PymavlinkAdapter:
                 self._target_system, self._target_component, seq, MISSION_TYPE_MISSION
             )
 
-    def _send_mission_item(self, master: Any, item: MissionItem, seq: int) -> None:
-        fields = mission_item_to_int_fields(item)
+    def _send_mission_item(self, master: Any, fields: MissionItemIntFields, seq: int) -> None:
         with self._send_lock:
             master.mav.mission_item_int_send(
                 self._target_system,

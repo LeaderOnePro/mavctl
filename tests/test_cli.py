@@ -171,13 +171,42 @@ def test_daemon_start_rejects_invalid_heartbeat_timeout(
 
 def test_daemon_start_spawns(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(process, "is_running", lambda: False)
-    monkeypatch.setattr(process, "spawn", lambda connect, heartbeat_timeout: 999)
+    captured: dict[str, object] = {}
+
+    def fake_spawn(
+        connect: str, heartbeat_timeout: float, source_system: int
+    ) -> int:
+        captured["source_system"] = source_system
+        return 999
+
+    monkeypatch.setattr(process, "spawn", fake_spawn)
     result = runner.invoke(app, ["daemon", "start", "--connect", "udp:127.0.0.1:14550", "--json"])
 
     assert result.exit_code == ExitCode.SUCCESS
     body = json.loads(result.stdout)
     assert body["status"] == "started"
     assert body["pid"] == 999
+    # default identity is distinct from the ecosystem GCS convention (255)
+    assert captured["source_system"] == 254
+
+
+@pytest.mark.parametrize("bad", ["0", "256", "-3", "notanumber"])
+def test_daemon_start_rejects_invalid_source_system_even_when_running(
+    monkeypatch: pytest.MonkeyPatch, bad: str
+) -> None:
+    """Validation precedes the already-running no-op, mirroring
+    --heartbeat-timeout semantics."""
+
+    def no_spawn(*_args: object, **_kwargs: object) -> int:
+        raise AssertionError("process.spawn must not be called for an invalid source system")
+
+    monkeypatch.setattr(process, "is_running", lambda: True)
+    monkeypatch.setattr(process, "spawn", no_spawn)
+    result = runner.invoke(
+        app, ["daemon", "start", "--connect", "udp:x", "--source-system", bad, "--json"]
+    )
+
+    assert result.exit_code == ExitCode.USAGE_ERROR
 
 
 def test_daemon_stop_when_down_exits_3(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -26,13 +26,33 @@ def test_parse_args_accepts_positive_timeout() -> None:
     assert args.connect == "udp:x"
 
 
+@pytest.mark.parametrize("bad", ["0", "256", "-3", "notanumber"])
+def test_parse_args_rejects_invalid_source_system(bad: str) -> None:
+    with pytest.raises(SystemExit) as excinfo:
+        _parse_args(["--connect", "udp:x", "--source-system", bad])
+    assert excinfo.value.code == 2  # argparse usage error
+
+
+def test_parse_args_defaults_to_distinct_gcs_source_system() -> None:
+    args = _parse_args(["--connect", "udp:x"])
+    # 255 is the ecosystem GCS convention (MAVProxy/Mission Planner/QGC);
+    # mavctl must default to a distinct identity.
+    assert args.source_system == 254
+    assert args.source_system != 255
+
+
 def test_main_wires_one_heartbeat_timeout_to_adapter_and_guards(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     captured: dict[str, object] = {}
 
-    def fake_create_adapter(connection_string: str, heartbeat_timeout_s: float) -> object:
+    def fake_create_adapter(
+        connection_string: str,
+        heartbeat_timeout_s: float,
+        source_system: int = 254,
+    ) -> object:
         captured["adapter_timeout"] = heartbeat_timeout_s
+        captured["adapter_source_system"] = source_system
         return object()
 
     def fake_server_cls(
@@ -58,6 +78,7 @@ def test_main_wires_one_heartbeat_timeout_to_adapter_and_guards(
 
     assert exit_code == 0
     assert captured["adapter_timeout"] == 5.0
+    assert captured["adapter_source_system"] == 254
     guard_config = captured["guard_config"]
     assert isinstance(guard_config, GuardConfig)
     # Same value, both consumers: no drifting defaults possible.

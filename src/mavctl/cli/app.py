@@ -14,7 +14,12 @@ from mavctl import __version__
 from mavctl.cli.render import emit_success, fail
 from mavctl.daemon import process
 from mavctl.daemon.client import DaemonNotRunningError, call_daemon
-from mavctl.models import ExitCode, MissionV1
+from mavctl.models import (
+    DEFAULT_GCS_SOURCE_SYSTEM,
+    ExitCode,
+    MissionV1,
+    validate_source_system,
+)
 from mavctl.paths import socket_path
 
 app = typer.Typer(
@@ -105,6 +110,15 @@ def _check_heartbeat_timeout(timeout: float, *, json_mode: bool) -> None:
         )
 
 
+def _check_source_system(source_system: int, *, json_mode: bool) -> None:
+    """Early CLI-side range check; the daemon entrypoint re-validates."""
+
+    try:
+        validate_source_system(source_system)
+    except ValueError as exc:
+        fail(ExitCode.USAGE_ERROR, f"--source-system: {exc}", json_mode=json_mode)
+
+
 def _call(
     method: str,
     json_mode: bool,
@@ -143,6 +157,14 @@ def daemon_start(
     heartbeat_timeout: Annotated[
         float, typer.Option("--heartbeat-timeout", help="Seconds before link is deemed lost.")
     ] = 3.0,
+    source_system: Annotated[
+        int,
+        typer.Option(
+            "--source-system",
+            help="MAVLink GCS source system id (1-255). Defaults to a distinct "
+            "identity so mavctl coexists with a conventional GCS on 255.",
+        ),
+    ] = DEFAULT_GCS_SOURCE_SYSTEM,
     json_mode: JsonOption = False,
 ) -> None:
     """Start the background daemon and connect to the vehicle."""
@@ -151,6 +173,7 @@ def daemon_start(
     # daemon must never turn an invalid --heartbeat-timeout into an
     # already-running success.
     _check_heartbeat_timeout(heartbeat_timeout, json_mode=json_mode)
+    _check_source_system(source_system, json_mode=json_mode)
 
     if process.is_running():
         pid = process.read_pid()
@@ -162,7 +185,7 @@ def daemon_start(
         return
 
     try:
-        pid = process.spawn(connect, heartbeat_timeout)
+        pid = process.spawn(connect, heartbeat_timeout, source_system)
     except RuntimeError as exc:
         fail(ExitCode.GENERAL_ERROR, str(exc), json_mode=json_mode)
 
