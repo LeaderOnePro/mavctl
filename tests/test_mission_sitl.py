@@ -11,13 +11,17 @@ Safety contract for this module:
 - every test cleans up: best-effort mission clear, read-back diagnostic,
   daemon stop, temporary runtime directory removal.
 
-Environment requirement (SITL-observed [FACT]): the mission link must NOT
-have a concurrent in-band GCS relaying mission traffic. sim_vehicle's
-MAVProxy (default sysid 255, the same as mavctl's) races the upload — the
-observed pattern is duplicated MISSION_REQUESTs and a premature
-MISSION_ACK(INVALID_SEQUENCE) after only two items. Run SITL with
-`--no-mavproxy` (dedicated instance) or point MAVCTL_SITL_CONNECT at a
-MAVProxy-free loopback link.
+Identity: mavctl runs with the distinct GCS identity 254:190 (MAVProxy
+defaults to 255:230), so the two can share a link without crossing each
+other's mission transfers ([FACT] ArduPilot rejects mission items whose
+sender identity differs from the MISSION_COUNT sender). MAVProxy relays
+duplicate every packet in both directions when it has more than one --out
+link; the adapter's upload converges on that (request debounce + stray
+ACK tolerance) and the SITL suite exercises both environments:
+
+- default: a DEDICATED MAVProxy-free SITL instance (protocol isolation);
+- MAVCTL_SITL_CONNECT=udp:127.0.0.1:14550: the shared sim_vehicle link with
+  MAVProxy in-band (coexistence acceptance).
 """
 
 from __future__ import annotations
@@ -40,11 +44,9 @@ pytestmark = pytest.mark.sitl
 
 # Default endpoint: a DEDICATED MAVProxy-free SITL instance:
 #   sim_vehicle.py -v ArduCopter --instance 1 --no-mavproxy --no-rebuild
-# (SERIAL0 tcp server on 127.0.0.1:5770). Override with MAVCTL_SITL_CONNECT.
-# A shared sim_vehicle link (default udp:127.0.0.1:14550 with MAVProxy) is
-# NOT usable for mission upload: its in-band mission module races mavctl
-# (duplicated MISSION_REQUESTs, premature INVALID_SEQUENCE ACK after two
-# items — verified by the raw-pymavlink probe during Phase 3A SITL bring-up).
+# (SERIAL0 tcp server on 127.0.0.1:5770). For the MAVProxy-coexistence
+# acceptance, point MAVCTL_SITL_CONNECT at the shared sim_vehicle link:
+#   MAVCTL_SITL_CONNECT=udp:127.0.0.1:14550 uv run pytest -m sitl
 _CONNECT = os.environ.get("MAVCTL_SITL_CONNECT", "tcp:127.0.0.1:5770")
 
 if not (
@@ -137,7 +139,7 @@ def daemon(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     monkeypatch.setenv("MAVCTL_HOME", home)
     if process.is_running():
         process.stop()
-    process.spawn(_CONNECT, heartbeat_timeout=3.0)
+    process.spawn(_CONNECT, heartbeat_timeout=3.0, source_system=254)
     try:
         state = _await_connected()
         assert state.get("connected") is True, "no heartbeat from SITL within 20s"
@@ -186,6 +188,34 @@ def _current_position_payload(lat0: float, lon0: float) -> dict[str, Any]:
 # -- conformance tests -------------------------------------------------------
 
 
+def _expected_round_trip(lat0: float, lon0: float) -> dict[str, Any]:
+    """The exact mission the SITL upload should produce on download."""
+
+    return {
+        "version": 1,
+        "items": [
+            {"type": "takeoff", "altitude_m": 10.0},
+            {
+                "type": "waypoint",
+                "lat_deg": round(lat0 + 0.0005, 7),
+                "lon_deg": round(lon0 + 0.0005, 7),
+                "altitude_m": 10.0,
+                "hold_s": 0.0,
+                "accept_radius_m": 0.0,
+            },
+            {
+                "type": "waypoint",
+                "lat_deg": round(lat0 + 0.001, 7),
+                "lon_deg": round(lon0 + 0.001, 7),
+                "altitude_m": 10.0,
+                "hold_s": 0.0,
+                "accept_radius_m": 0.0,
+            },
+            {"type": "rtl"},
+        ],
+    }
+
+
 def test_mission_upload_succeeds(daemon: None) -> None:
     lat0, lon0 = _await_position()
     result = _upload_mission(_current_position_payload(lat0, lon0))
@@ -193,37 +223,27 @@ def test_mission_upload_succeeds(daemon: None) -> None:
     assert result.get("accepted") is True
     assert result.get("result_name") == "ACCEPTED"
     assert result.get("item_count") == 4
-    assert result.get("sent_upto") == 3
-
-    # NOTE: the immediate download after upload is intentionally NOT asserted
-    # here — ArduCopter normalizes the uploaded takeoff into a GLOBAL-frame
-    # waypoint, which mavctl v1 reports as mission_item_unsupported (see
-    # test_mission_download_reports_normalized_takeoff_atomically).
+    # sent_upto is the highest wire sequence sent: home slot (0) + 4 items
+    assert result.get("sent_upto") == 4
 
 
-def test_mission_download_reports_normalized_takeoff_atomically(
-    daemon: None,
-) -> None:
-    """SITL-observed ArduCopter behavior: an uploaded NAV_TAKEOFF item is
-    normalized on the vehicle into a GLOBAL-frame waypoint at the current
-    position with the home MSL altitude — it does not survive as a takeoff.
-    mavctl v1 cannot represent that item losslessly, so download must fail
-    atomically with mission_item_unsupported (never emit partial/lossy
-    JSON)."""
+def test_mission_download_round_trips_losslessly(daemon: None) -> None:
+    """Upload → download returns exactly the v1 mission that was sent.
+
+    ArduPilot's home-slot convention ([FACT] AP_Mission::add_cmd auto-inserts
+    home at storage slot 0; get_item always exposes it as seq 0) means mavctl
+    transfers its items at wire seqs 1..N and the download validates and
+    excludes the home entry. The earlier "normalized takeoff" observation was
+    this home slot being read as the first item, which also silently
+    overwrote the real first item — both defects are fixed by the wire
+    convention.
+    """
 
     lat0, lon0 = _await_position()
     _upload_mission(_mission_payload(lat0, lon0))
 
-    response = call_daemon("mission_download", timeout=30)
-    assert response.ok is False, (
-        "unexpected success: the normalized takeoff should be atomically unsupported"
-    )
-    assert response.error is not None
-    detail = response.error.detail
-    assert detail.get("reason") == "mission_item_unsupported"
-    assert detail.get("seq") == 0
-    assert detail.get("command") == 16  # normalized to WAYPOINT by ArduCopter
-    assert "frame" in detail
+    mission = _download_mission()
+    assert mission == _expected_round_trip(lat0, lon0)
 
     # the daemon must remain healthy for subsequent operations
     assert call_daemon("ping").ok is True
@@ -255,6 +275,37 @@ def test_mission_download_empty_after_clear(daemon: None) -> None:
     assert call_daemon("ping").ok is True
 
 
+def test_mission_transfer_survives_relay_duplicated_traffic(daemon: None) -> None:
+    """Regression: a relay with duplicated forward traffic (two MAVProxy --out
+    links) duplicates the GCS's MISSION_COUNT, which re-initializes the
+    vehicle's upload session mid-transfer; every item request then arrives
+    twice. The upload must still converge (no INVALID_SEQUENCE abort, no
+    premature-ACCEPTED abort) and the stored mission must be intact.
+
+    Evidenced on the shared sim_vehicle link (MAVCTL_SITL_CONNECT=
+    udp:127.0.0.1:14550) where this is the live topology; on the dedicated
+    MAVProxy-free endpoint the test still guards the adapter logic.
+    """
+
+    lat0, lon0 = _await_position()
+    payload = _mission_payload(lat0, lon0)
+    result = _upload_mission(payload)
+
+    assert result.get("accepted") is True
+    assert result.get("result_name") == "ACCEPTED"
+    assert result.get("item_count") == 4
+
+    # upload again without clearing: the second transfer replaces the first
+    # under the same duplicated-traffic conditions and must also converge
+    result2 = _upload_mission(payload)
+    assert result2.get("accepted") is True
+    assert result2.get("item_count") == 4
+
+    # the stored mission is exactly what was sent, not a partial merge
+    mission = _download_mission()
+    assert mission == _expected_round_trip(lat0, lon0)
+
+
 def test_cleanup_leaves_empty_mission_across_daemon_restart(daemon: None) -> None:
     lat0, lon0 = _await_position()
     _upload_mission(_mission_payload(lat0, lon0))
@@ -262,7 +313,7 @@ def test_cleanup_leaves_empty_mission_across_daemon_restart(daemon: None) -> Non
     # stop and respawn the daemon: the mission lives on the vehicle, not in
     # the daemon process
     process.stop()
-    process.spawn(_CONNECT, heartbeat_timeout=3.0)
+    process.spawn(_CONNECT, heartbeat_timeout=3.0, source_system=254)
     state = _await_connected()
     assert state.get("connected") is True
 
