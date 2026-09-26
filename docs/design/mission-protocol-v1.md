@@ -129,6 +129,24 @@ Source: `libraries/GCS_MAVLink/MissionItemProtocol.cpp` /
   lon if zero"** (`loc.lat == 0 && loc.lng == 0` → default/current
   position); `ModeAuto::do_RTL(void)` takes **no location at all** — RTL
   mission items ignore x/y/z entirely.
+- **Home slot** (`AP_Mission::add_cmd` / `replace_cmd` /
+  `write_home_to_storage`; `MissionItemProtocol_Waypoints::get_item`):
+  storage slot 0 is reserved for the vehicle home; the first appended item
+  auto-writes home to slot 0 (`add_cmd`); a GCS write to slot 0 is
+  **silently ignored** (`replace_cmd`: "Writing index zero is not allowed…
+  we return true"); downloads always expose home as seq 0 ("always allow
+  HOME to be read") and `item_count()` includes it. Home is stored as
+  `MAV_CMD_NAV_WAYPOINT` with the GLOBAL (MSL) frame —
+  `mission_cmd_to_mavlink_int` emits frame `MAV_FRAME_GLOBAL` (0) for any
+  non-relative location, and relative-altitude items come back as
+  `MAV_FRAME_GLOBAL_RELATIVE_ALT` (3), not `..._INT` (6).
+- **Request pacing** (`MissionItemProtocol.cpp` `update`): the vehicle
+  re-requests an item at most once per second
+  (`wp_recv_timeout_ms = 1000U + link->get_stream_slowdown_ms()`).
+- **Download requests** (`handle_mission_request_int`): not sequence-bound —
+  any seq in `[0, item_count)` is answered immediately (random access);
+  while an upload session is active they are answered
+  `MISSION_ACK(MAV_MISSION_DENIED)`.
 
 `[OPEN]` Exact request-retry behavior of the vehicle at the transport layer
 (queued ap-message re-sends) and whether re-requests of the *same* seq occur
@@ -318,21 +336,64 @@ Rules (`[DECIDED]` unless noted):
 
 ## D. Upload state machine
 
-Transaction (ArduPilot-paced; §A.5 facts):
+Wire-sequence convention (ArduPilot home slot, SITL-verified):
+
+`[FACT]` ArduPilot reserves storage slot 0 for the vehicle home
+(`AP_Mission::add_cmd` auto-inserts home before the first appended item,
+`replace_cmd(0)` silently ignores writes to slot 0, and downloads always
+expose home at seq 0 — §A.5). mavctl therefore transfers its v1 items in
+**wire sequence space 1..N**:
 
 ```text
-GCS → MISSION_COUNT(count=N, mission_type=MISSION)
+GCS → MISSION_COUNT(count=N+1, mission_type=MISSION)
 vehicle → MISSION_REQUEST_INT(seq=0)          (vehicle drives pacing)
-GCS → MISSION_ITEM_INT(seq=0)                 (repeat for seq=1..N-1)
+GCS → MISSION_ITEM_INT(seq=0)                 inert home-slot placeholder
+                                              (a canonical zero waypoint;
+                                              ArduPilot never persists it)
+vehicle → MISSION_REQUEST_INT(seq=1)          (vehicle drives pacing)
+GCS → MISSION_ITEM_INT(seq=1)                 v1 item 0
+...                                           (repeat for seq=2..N)
 vehicle → MISSION_ACK(type, mission_type)     terminal, immediately after
                                               the last item is processed
 ```
+
+`sent_upto`, sequence-gap details and `item_count` are expressed in this
+wire space; `item_count` in the outcome is the **v1** count N. Download is
+the mirror image (§E): seq 0 must be home-shaped and is validated and
+excluded, v1 items live at seqs 1..N. Vehicles that do not follow the
+ArduPilot convention fail the download atomically at seq 0
+(`mission_item_unsupported`) instead of being misread.
 
 `[FACT]` ArduPilot enforces **strict in-order** items: any item whose seq ≠
 expected gets `MISSION_ACK(MAV_MISSION_INVALID_SEQUENCE)` **while the
 session stays alive** waiting for the expected seq. `[FACT]` the vehicle
 times an upload out after **8 s** without items and cancels with
 `MISSION_ACK(MAV_MISSION_OPERATION_CANCELLED)`.
+
+### D.0 Relay-duplication convergence (SITL-verified)
+
+`[FACT]` A MAVLink relay duplicates every packet in both directions when it
+has more than one `--out` link (observed with MAVProxy under its default
+sim_vehicle wiring, which passes both `--out 127.0.0.1:14550` and
+`--out udp:127.0.0.1:14550`). The observable failure chain: the GCS's
+`MISSION_COUNT` arrives twice → the second copy re-initializes the vehicle
+upload session (`init_send_requests(…, 0, …)`) → every item request then
+arrives twice → the first real duplicate request draws a re-send, the
+vehicle rejects the re-delivered duplicate with
+`MISSION_ACK(INVALID_SEQUENCE)` (its `request_i` already advanced) → a
+strict-protocol GCS aborts an actually-healthy transfer.
+
+`[DECIDED]` mavctl converges instead of aborting, with a bounded,
+source-grounded rule set (no blind re-sends are added — retry remains
+request-driven):
+
+| Duplicated-traffic event | mavctl behavior | Grounding |
+| --- | --- | --- |
+| duplicate `MISSION_REQUEST(_INT)` for a seq sent **within the last 250 ms** | suppress the re-send (skip) | the vehicle re-requests at most once per second (`wp_recv_timeout_ms = 1000`, §A.5) — a sooner duplicate is transport noise; answering it deterministically draws `INVALID_SEQUENCE` |
+| duplicate request for a seq sent **longer ago** than the debounce window | re-send (genuine loss recovery) | unchanged request-driven retry semantics |
+| `MISSION_ACK(INVALID_SEQUENCE)` mid-transfer or in the terminal window | tolerate, keep answering requests | the vehicle keeps its session on `INVALID_SEQUENCE` (`handle_mission_item` early-returns without touching the session) |
+| premature/stale `MISSION_ACK(ACCEPTED)` mid-transfer or during download COUNT wait | tolerate, keep waiting | a stale duplicate of the previous transaction's terminal ACK; a genuinely premature ACCEPTED stalls into the overall deadline → still `uncertain` |
+| everything else (future seq, out-of-range, real error ACKs, timeouts) | unchanged §D behavior | — |
 
 `[DECIDED]` **request classification** (mavctl tracks
 `expected_next_seq`, starting at 0 after `MISSION_COUNT`): the vehicle
@@ -404,7 +465,8 @@ either way; confirm in SITL.
 
 ```text
 GCS → MISSION_REQUEST_LIST(mission_type=MISSION)
-vehicle → MISSION_COUNT(count, mission_type=MISSION)
+vehicle → MISSION_COUNT(count, mission_type=MISSION)   count = 1 + v1 items
+                                                (ArduPilot home slot at seq 0)
 GCS → MISSION_REQUEST_INT(seq=0..count-1)
 vehicle → MISSION_ITEM_INT(seq)                (per request)
 GCS → MISSION_ACK(MAV_MISSION_ACCEPTED)        (terminal, GCS ends session)
@@ -421,14 +483,16 @@ failure must be **non-fatal**.
 
 | Event | Behavior |
 | --- | --- |
-| `MISSION_COUNT.count == 0` | empty mission → success `{"version": 1, "items": []}`; terminal ACK still sent (courtesy) |
+| `MISSION_COUNT.count == 0` or `== 1` | no v1 items (0 = cleared/never set, 1 = home slot only) → success `{"version": 1, "items": []}`; terminal ACK still sent (courtesy) |
+| **home slot validation** (seq 0, count ≥ 2) | the seq-0 item must be home-shaped (`MAV_CMD_NAV_WAYPOINT` in the GLOBAL MSL frame — the verified ArduPilot emission); otherwise the vehicle does not follow the ArduPilot convention → **download fails atomically** with `mission_item_unsupported` (exit 6, seq 0/command/frame in detail) — never misread as a v1 item |
+| duplicate item (seq seen) | keep the first; ignore retransmissions |
 | duplicate item (seq seen) | keep the first; ignore retransmissions |
 | out-of-order item | buffer by seq; completion requires all of 0..count-1 |
 | missing item / request timeout | re-send `MISSION_REQUEST_INT(seq)` up to `mission_retry_count` (candidate 3, `mission_request_timeout_s` candidate 1.0 s); then **fail atomically** (exit 6, `mission_protocol_timeout`, `detail.received`) — **no partial mission is ever emitted** |
 | source / mission-type filtering | count/items from other sources or `mission_type`s ignored |
-| unsupported remote item (`command` outside the v1 whitelist or frame ≠ 6) | **download fails atomically** with `mission_item_unsupported` (exit 6) listing seq/command — never silently dropped, never lossy pseudo-JSON (download must round-trip) |
+| unsupported remote item (`command` outside the v1 whitelist or frame ∉ {`MAV_FRAME_GLOBAL_RELATIVE_ALT` (3), `MAV_FRAME_GLOBAL_RELATIVE_ALT_INT` (6)}) | **download fails atomically** with `mission_item_unsupported` (exit 6) listing seq/command — never silently dropped, never lossy pseudo-JSON (download must round-trip). Frame 3 and 6 are the same relative-altitude frame for integer messages; ArduPilot emits 3 on download (`mission_cmd_to_mavlink_int`), mavctl sends 6 |
 | conversion to JSON | inverse of §C; ints scaled `/1e7`. **Lossless policy**: the conversion succeeds only when the remote item is exactly what mavctl v1 would send — every parameter the v1 schema does not express (takeoff param1..4 and non-zero x/y, waypoint param3/param4, land param2/param3/param4, rtl param1..4) must carry its canonical default; NaN / `INT32_MAX` "default" encodings are rejected rather than guessed. Otherwise download fails atomically with `mission_item_unsupported` |
-| count limit | a remote `MISSION_COUNT` above `MISSION_MAX_ITEMS` (100) fails **before any item request** with `mission_item_unsupported` and `detail.observed_count` / `detail.max_supported_items` — no request flood, no pydantic traceback |
+| count limit | a remote `MISSION_COUNT` whose v1 item budget (count − 1 for the home slot) exceeds `MISSION_MAX_ITEMS` (100) fails **before any item request** with `mission_item_unsupported` and `detail.observed_count` (v1 items) / `detail.max_supported_items` — no request flood, no pydantic traceback |
 | final ACK | GCS sends `MISSION_ACK(MAV_MISSION_ACCEPTED)` targeting the locked autopilot; send failure is **non-fatal** (`[FACT]`: ArduPilot ignores it) |
 | target IDs | all requests and the terminal ACK use the locked autopilot's system/component (same discovery as COMMAND_ACK) |
 
@@ -492,6 +556,31 @@ and no misleading JSON is produced.
 ---
 
 ## H. Architecture proposal
+
+### H.0 GCS identity (distinct on-wire identity)
+
+`[FACT]` MAVProxy (1.8.74) defaults to `--source-system 255`
+`--source-component 230`; Mission Planner and QGC also conventionally use
+system 255. ArduPilot binds a mission upload to the identity that sent
+`MISSION_COUNT` (`dest_sysid`/`dest_compid`; items from other identities →
+`MAV_MISSION_DENIED`), so two GCSes sharing system id 255 can cross-feed
+each other's transfers.
+
+`[DECIDED]` mavctl presents its own GCS identity, **default source system
+254, source component 190** (`MAV_COMP_ID_MISSIONPLANNER`):
+
+- 254 keeps the (system, component) pair distinct from the ecosystem
+  convention (255, 230/0) so mavctl coexists with a conventional GCS on one
+  link without identity collision;
+- `--source-system` is exposed on `mavctl daemon start`, validated strictly
+  to integer `1..255` (0 is reserved in MAVLink); the daemon entrypoint
+  re-validates as the final boundary;
+- the component id is fixed at 190 (the standard ground-station component);
+  it is not user-configurable in v1;
+- mavctl does not send its own HEARTBEAT in v1; the identity is carried by
+  the source address of every message it sends;
+- `mavctl status` shows the **vehicle** system/component (`sys=1 comp=1`),
+  never mavctl's own identity — the two must not be confused.
 
 Likely future modules (none created in this design round):
 

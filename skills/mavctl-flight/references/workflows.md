@@ -154,14 +154,13 @@ Any tool or adapter that exposes a mavutil-compatible endpoint works too
 for the macOS virtualenv note (`ModuleNotFoundError: pexpect`) when launching
 SITL tools.
 
-<!-- TODO(SITL): the workflow below is mock-validated only; run the Phase 3A
-     SITL acceptance plan before trusting it end-to-end. -->
-
 # Mission upload / inspect / clear (Phase 3A)
 
 Upload takes a mission JSON file (v1 schema: takeoff-first, waypoint/land/rtl
 items). Upload and clear never start the vehicle; execution does not exist
-yet.
+yet (uploading does not switch the vehicle to AUTO). The transfer is
+ArduPilot SITL validated (lossless round-trip including takeoff); no
+real-aircraft claim.
 
 ```bash
 # preview first — dry-run runs every guard and sends nothing

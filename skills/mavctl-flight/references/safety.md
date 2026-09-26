@@ -99,6 +99,11 @@ response carries reason `remote_mission_state_uncertain` (exit 6); always
 re-check with `mavctl mission download` before trusting anything. There is no
 mission start/execution command: uploading never flies the vehicle.
 
+mavctl talks to the vehicle under its own GCS identity (default source
+system 254, `--source-system` on `daemon start`) so it can share a link with
+a conventional GCS (MAVProxy/Mission Planner default to 255) without
+identity collision; mission transfers stay bound to mavctl's identity.
+
 ## Altitude limits
 
 `takeoff` requires a finite positive altitude (exit 2 `invalid_altitude`

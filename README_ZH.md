@@ -70,14 +70,18 @@ mavctl mission clear --confirm [--dry-run]
 | 幂等重复 | 重复执行已达成的变更返回成功（"already armed"） |
 | 事务安全 | ACK/NACK 处理、命令串行化、失链中止 |
 
-mission upload/download/clear 已实现并由 mock 协议测试覆盖；mission 协议的
-SITL 验收尚未运行，在此之前请将该 mission 接口视为仅经 mock 验证。目前没有
-mission start/execution 命令。
+mission upload/download/clear 已通过 ArduPilot SITL 验证（无损的
+upload → download 语义往返，含 takeoff 项；在专用无 MAVProxy 实例与带
+MAVProxy 的共享 sim_vehicle 链路两个环境均实测通过）。mavctl 使用独立的
+GCS 身份（默认 source system 254，可通过
+`mavctl daemon start --source-system <1..255>` 配置），与常规 GCS 共存而非
+相互竞争。mission 支持仅限 ArduPilot SITL 验证——不声明真实飞机验证。
+目前没有 mission start/execution 命令：上传不会切换载具到 AUTO。
 
 未实现——仅描述当前范围，不是路线图承诺：
 
 ```text
-任务（mission）上传/下载/启动
+任务（mission）执行（start/pause/resume/stop/set-current）
 参数（param）读写
 地理围栏（geofence）
 日志下载与分析

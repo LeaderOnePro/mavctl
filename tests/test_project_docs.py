@@ -105,14 +105,14 @@ def test_readme_never_shows_a_force_arm_invocation() -> None:
     assert match is None, f"README: {match.group(0)!r}"
 
 
-def test_readme_states_mission_surface_is_mock_validated_only() -> None:
-    # Phase 3A honesty gate: mission commands are documented as implemented,
-    # but the READMEs must say SITL acceptance has not run yet and that there
-    # is no mission execution command.
+def test_readme_states_mission_surface_is_sitl_validated_not_flight_proven() -> None:
+    # Honesty gate (updated after the Phase 3A SITL acceptance): the READMEs
+    # must state that the mission transfer is ArduPilot SITL validated only
+    # (no real-aircraft claim) and that there is no mission execution command.
     for readme in (_README, _ZH_README):
         assert "mission upload" in readme
-        assert "mock" in readme.lower()
-        assert "SITL" in readme
+        assert "SITL validated" in readme or "SITL 验证" in readme
+        assert "real-aircraft" in readme or "真实飞机" in readme
 
 
 def test_readme_quickstart_covers_the_safe_workflow() -> None:

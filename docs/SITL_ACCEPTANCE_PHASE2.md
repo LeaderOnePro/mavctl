@@ -361,10 +361,12 @@ uv run mavctl rtl --confirm --dry-run   # 期望：exit 4 / not_connected
 uv run mavctl daemon stop
 ```
 
-## 8g. Phase 3A mission 协议验收（计划——尚未运行）
+## 8g. Phase 3A mission 协议验收
 
-mission upload / download / clear 已实现并通过 mock 协议测试。SITL 验收
-必须在**专用的无带内 GCS 实例**上运行：
+mission upload / download / clear 已实现并通过 mock 协议测试，并已完成
+SITL conformance 验收（2026-09）。两个环境均已实测通过：
+
+**环境 1 — 专用无带内 GCS 实例（协议隔离环境）**：
 
 ```bash
 sim_vehicle.py -v ArduCopter --instance 1 --no-mavproxy --no-rebuild
@@ -372,17 +374,44 @@ sim_vehicle.py -v ArduCopter --instance 1 --no-mavproxy --no-rebuild
 MAVCTL_SITL_CONNECT=tcp:127.0.0.1:5770 uv run pytest tests/test_mission_sitl.py -m sitl
 ```
 
-`[FACT]`（SITL 实测）：共享 sim_vehicle 默认链路（带 MAVProxy，sysid 255
-与 mavctl 相同）时，MAVProxy 的 mission 模块会竞争上传——观察到成对的
-`MISSION_REQUEST` 重发与 2 项后的提前 `INVALID_SEQUENCE` ACK。upload /
-download / clear 已实现并通过 mock 协议测试；以下为既定验收步骤（全部为
-非执行类操作：不起飞、不切 AUTO、不发送 mission start）：
+**环境 2 — 默认共享链路（MAVProxy 共存验收，回归测试）**：
+
+```bash
+sim_vehicle.py -v ArduCopter   # 默认 14550，带 MAVProxy
+MAVCTL_SITL_CONNECT=udp:127.0.0.1:14550 uv run pytest tests/test_mission_sitl.py -m sitl
+```
+
+`[FACT]`（SITL 实测 + 源码证实）：ArduPilot 将 storage slot 0 保留给
+vehicle home——首个追加的 item 会自动先写入 home（`AP_Mission::add_cmd`），
+对 slot 0 的写入被静默忽略（`replace_cmd`），下载永远把 home 暴露为
+seq 0（`get_item`），且 `MISSION_COUNT` 包含 home。mavctl 因此使用
+**wire 序号空间 1..N** 传输 v1 items（seq 0 发送一个惰性占位 waypoint，
+ArduPilot 从不持久化它），下载时验证并排除 home。早期观察到的
+"takeoff 被归一化为 GLOBAL-frame waypoint" 实际上是 home slot；
+同期还发现 v1 首项被 wire item 1 静默覆盖的 P0 数据丢失缺陷——
+两项均已通过 wire 约定修复，TAKEOFF 无损往返已实测。
+
+`[FACT]`（SITL 实测 + 源码证实）：早期记录的 "MAVProxy 竞争上传" 的
+根因是**链路重复**而非 sysid 冲突：默认 sim_vehicle 接线下 MAVProxy
+同时持有两条 `--out 14550` 链路，每个包都被双向复制——`MISSION_COUNT`
+到达两次会把载具上传会话重新初始化，随后每个 item request 成对到达，
+重发的 item 被 `INVALID_SEQUENCE` 拒绝。mavctl 的应对是双重修复：
+
+1. **独立 GCS 身份**：默认 source system **254** / component **190**
+   （MAVProxy 默认 255/230）。`mavctl daemon start --source-system <1..255>`
+   可覆盖（严格校验）；
+2. **上传收敛**：250 ms 内的重复 item request 不重发（载具重发间隔
+   ≥1 s，更快的必为链路噪声）、`INVALID_SEQUENCE` 与陈旧 ACCEPTED ACK
+   容忍后继续——真实丢失仍由载具 ≥1 s 的重发请求驱动恢复。
+
+以下为既定验收步骤（全部为非执行类操作：不起飞、不切 AUTO、
+不发送 mission start）：
 
 ```bash
 uv run mavctl daemon start --connect udp:127.0.0.1:14550
 # 1. 上传四项任务：TAKEOFF 10m → WAYPOINT A → WAYPOINT B → RTL
 uv run mavctl mission upload mission.json --confirm
-# 2. 下载并核对语义 JSON 等价
+# 2. 下载并核对语义 JSON 等价（含 TAKEOFF 无损往返）
 uv run mavctl mission download --json
 # 3. 清除并读回验证 count == 0
 uv run mavctl mission clear --confirm
