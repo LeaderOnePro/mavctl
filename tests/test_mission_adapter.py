@@ -665,6 +665,70 @@ def test_download_home_slot_only_mission_is_empty() -> None:
     assert _sent(master, "MISSION_REQUEST_INT") == []
 
 
+# -- home-slot discrimination at download seq 0 ------------------------------
+
+
+def test_download_seq0_takeoff_is_not_mistaken_for_home(
+    fast_timeouts: None,
+) -> None:
+    """A relative-frame NAV_TAKEOFF at wire seq 0 (a non-ArduPilot-convention
+    first item) must be rejected atomically — never read as the home slot and
+    silently dropped, and never emitted as partial mission output."""
+    adapter, master = _adapter()
+    runner = _Runner(lambda: adapter.download_mission())
+    runner.start()
+    assert _start_download(adapter, master, count=2)
+    adapter._handle_message(_item(0, command=22, frame=6))  # TAKEOFF, relative
+    assert runner.join(timeout=10)
+    assert isinstance(runner.error, MissionItemUnsupportedError)
+    assert runner.error.seq == 0
+    assert runner.error.command == 22
+    assert runner.error.frame == 6
+    # no partial mission was emitted anywhere
+    assert not isinstance(runner.result, DownloadedMissionV1)
+
+
+def test_download_seq0_relative_waypoint_is_not_mistaken_for_home(
+    fast_timeouts: None,
+) -> None:
+    """A relative-frame NAV_WAYPOINT at wire seq 0 does not match the
+    ArduPilot home signature (WAYPOINT in the GLOBAL MSL frame) and must fail
+    the download atomically with the seq-0 detail."""
+    adapter, master = _adapter()
+    runner = _Runner(lambda: adapter.download_mission())
+    runner.start()
+    assert _start_download(adapter, master, count=2)
+    adapter._handle_message(_item(0, command=16, frame=6, x=10000000, y=20000000))
+    assert runner.join(timeout=10)
+    assert isinstance(runner.error, MissionItemUnsupportedError)
+    assert runner.error.seq == 0
+    assert runner.error.command == 16
+    assert runner.error.frame == 6
+    assert not isinstance(runner.result, DownloadedMissionV1)
+
+
+def test_download_canonical_home_slot_is_accepted_and_excluded(
+    fast_timeouts: None,
+) -> None:
+    """The canonical ArduPilot home emission (WAYPOINT, GLOBAL MSL frame) at
+    seq 0 is validated and excluded, and later wire seqs still convert."""
+    adapter, master = _adapter()
+    runner = _Runner(lambda: adapter.download_mission())
+    runner.start()
+    assert _start_download(adapter, master, count=2)
+    adapter._handle_message(_home_item(0))  # WAYPOINT + GLOBAL: home-shaped
+    adapter._handle_message(_item(1, command=22, frame=3))  # first v1 item
+    assert runner.join(timeout=10)
+    assert runner.error is None
+    mission = runner.result
+    assert mission is not None
+    assert len(mission.items) == 1
+    assert mission.items[0].type == "takeoff"
+    assert mission.items[0].altitude_m == 10.0
+    # exactly the wire seqs 0 (home) and 1 (item) were requested
+    assert _request_seqs(master) == [0, 1]
+
+
 def test_download_duplicate_item_not_refetched() -> None:
     adapter, master = _adapter()
     runner = _Runner(lambda: adapter.download_mission())
