@@ -1,10 +1,9 @@
 """MAVLink link identity defaults shared by CLI, daemon, and adapter.
 
 mavctl presents its own GCS identity on the wire, independent of the vehicle
-identity it talks to. The mainstream ArduPilot ecosystem GCS convention is
-source system 255 (MAVProxy, Mission Planner, QGround Control all default
-there), so mavctl defaults to a distinct system id to coexist with a
-conventional GCS on the same link instead of racing it.
+identity it talks to. The GCS mavctl was validated against — MAVProxy 1.8.74
+— defaults to source system 255, so mavctl defaults to a distinct system id
+and never shares an on-wire identity with that GCS.
 """
 
 from __future__ import annotations

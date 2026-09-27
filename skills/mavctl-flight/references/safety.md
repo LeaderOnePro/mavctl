@@ -100,9 +100,9 @@ re-check with `mavctl mission download` before trusting anything. There is no
 mission start/execution command: uploading never flies the vehicle.
 
 mavctl talks to the vehicle under its own GCS identity (default source
-system 254, `--source-system` on `daemon start`) so it can share a link with
-a conventional GCS (MAVProxy/Mission Planner default to 255) without
-identity collision; mission transfers stay bound to mavctl's identity.
+system 254, `--source-system` on `daemon start`) so it does not share an
+on-wire identity with the GCS it was validated against (MAVProxy 1.8.74,
+default 255/230); mission transfers stay bound to mavctl's identity.
 
 ## Altitude limits
 

@@ -559,19 +559,23 @@ and no misleading JSON is produced.
 
 ### H.0 GCS identity (distinct on-wire identity)
 
-`[FACT]` MAVProxy (1.8.74) defaults to `--source-system 255`
-`--source-component 230`; Mission Planner and QGC also conventionally use
-system 255. ArduPilot binds a mission upload to the identity that sent
-`MISSION_COUNT` (`dest_sysid`/`dest_compid`; items from other identities →
-`MAV_MISSION_DENIED`), so two GCSes sharing system id 255 can cross-feed
+`[FACT]` MAVProxy (1.8.74, the GCS this project validates against) defaults
+to `--source-system 255` `--source-component 230`. ArduPilot binds a mission
+upload to the identity that sent `MISSION_COUNT`
+(`dest_sysid`/`dest_compid`; items from other identities →
+`MAV_MISSION_DENIED`), so two GCSes sharing one identity can cross-feed
 each other's transfers.
 
 `[DECIDED]` mavctl presents its own GCS identity, **default source system
 254, source component 190** (`MAV_COMP_ID_MISSIONPLANNER`):
 
-- 254 keeps the (system, component) pair distinct from the ecosystem
-  convention (255, 230/0) so mavctl coexists with a conventional GCS on one
-  link without identity collision;
+- 254 keeps the (system, component) pair distinct from the validated GCS
+  default (255, 230) so mavctl does not share an on-wire identity with the
+  local MAVProxy; identity separation prevents **mission session ownership
+  collision** — it is one of two independent hardening layers, the other
+  being the duplicate-request debounce against relay-duplicated traffic
+  (§D.0), which addresses a different failure mode (duplicated delivery on
+  the validated sim_vehicle + MAVProxy relay topology, not a GCS defect);
 - `--source-system` is exposed on `mavctl daemon start`, validated strictly
   to integer `1..255` (0 is reserved in MAVLink); the daemon entrypoint
   re-validates as the final boundary;

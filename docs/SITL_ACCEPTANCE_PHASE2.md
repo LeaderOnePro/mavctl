@@ -395,14 +395,24 @@ ArduPilot 从不持久化它），下载时验证并排除 home。早期观察�
 根因是**链路重复**而非 sysid 冲突：默认 sim_vehicle 接线下 MAVProxy
 同时持有两条 `--out 14550` 链路，每个包都被双向复制——`MISSION_COUNT`
 到达两次会把载具上传会话重新初始化，随后每个 item request 成对到达，
-重发的 item 被 `INVALID_SEQUENCE` 拒绝。mavctl 的应对是双重修复：
+重发的 item 被 `INVALID_SEQUENCE` 拒绝。这是两个相互独立的硬化层，针对
+不同失败模式：
 
-1. **独立 GCS 身份**：默认 source system **254** / component **190**
-   （MAVProxy 默认 255/230）。`mavctl daemon start --source-system <1..255>`
-   可覆盖（严格校验）；
-2. **上传收敛**：250 ms 内的重复 item request 不重发（载具重发间隔
-   ≥1 s，更快的必为链路噪声）、`INVALID_SEQUENCE` 与陈旧 ACCEPTED ACK
-   容忍后继续——真实丢失仍由载具 ≥1 s 的重发请求驱动恢复。
+1. **独立 GCS 身份**（防 mission session ownership collision）：默认
+   source system **254** / component **190**（MAVProxy 1.8.74 默认
+   255/230）。`mavctl daemon start --source-system <1..255>` 可覆盖（严格
+   校验）；
+2. **上传收敛**（防 relay duplicated traffic）：250 ms 内的重复 item
+   request 不重发（载具重发间隔 ≥1 s，更快的必为重复投递）、
+   `INVALID_SEQUENCE` 与陈旧 ACCEPTED ACK 容忍后继续——真实丢失仍由载具
+   ≥1 s 的重发请求驱动恢复。重复投递是该验收拓扑（sim_vehicle + MAVProxy
+   双 --out 转发）的传输行为，不是 MAVProxy 缺陷。
+
+**自动化测试与手工验收的边界**：`tests/test_mission_sitl.py` 默认运行在
+隔离的无 MAVProxy loopback 实例（tcp:127.0.0.1:5770）；该套件也支持经
+`MAVCTL_SITL_CONNECT=udp:127.0.0.1:14550` 运行在共享 MAVProxy 拓扑上
+（已实测通过）。下述 CLI 级 upload → download → clear 手工验收是额外的
+兼容性覆盖，记录于本轮验收。
 
 以下为既定验收步骤（全部为非执行类操作：不起飞、不切 AUTO、
 不发送 mission start）：

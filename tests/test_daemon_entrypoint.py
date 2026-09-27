@@ -35,8 +35,8 @@ def test_parse_args_rejects_invalid_source_system(bad: str) -> None:
 
 def test_parse_args_defaults_to_distinct_gcs_source_system() -> None:
     args = _parse_args(["--connect", "udp:x"])
-    # 255 is the ecosystem GCS convention (MAVProxy/Mission Planner/QGC);
-    # mavctl must default to a distinct identity.
+    # 255 is the source system of the validated GCS environment
+    # (MAVProxy 1.8.74); mavctl must default to a distinct identity.
     assert args.source_system == 254
     assert args.source_system != 255
 

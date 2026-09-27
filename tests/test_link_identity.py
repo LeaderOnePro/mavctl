@@ -12,8 +12,8 @@ from mavctl.models import (
 
 
 def test_default_identity_is_distinct_from_ecosystem_gcs() -> None:
-    """MAVProxy (255/230) and Mission Planner/QGC (255/…) conventionally use
-    system 255; mavctl must not share that identity."""
+    """The validated GCS environment (MAVProxy 1.8.74) uses 255/230; mavctl
+    must not share that identity."""
 
     assert DEFAULT_GCS_SOURCE_SYSTEM != 255
     assert DEFAULT_GCS_SOURCE_SYSTEM == 254

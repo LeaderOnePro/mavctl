@@ -75,13 +75,17 @@ Cross-cutting behaviour:
 | transaction safety | ACK/NACK handling, serialized commands, link-loss abort |
 
 Mission upload/download/clear are validated against ArduPilot SITL
-(lossless upload → download round-trip, including takeoff items, on both a
-dedicated MAVProxy-free instance and the shared sim_vehicle link with
-MAVProxy in-band). mavctl uses its own GCS identity (default source system
-254, configurable via `mavctl daemon start --source-system <1..255>`) so it
-coexists with a conventional GCS instead of racing it. Mission support is
-ArduPilot SITL validated only — no real-aircraft claim. There is no mission
-start/execution command yet: uploading does not switch the vehicle to AUTO.
+(lossless upload → download round-trip, including takeoff items): the
+automated suite runs on a dedicated MAVProxy-free loopback instance, and the
+shared sim_vehicle + MAVProxy relay topology was validated with the same
+suite plus a manual CLI acceptance. mavctl uses its own GCS identity
+(default source system 254, configurable via
+`mavctl daemon start --source-system <1..255>`) so it never shares an
+on-wire identity with the GCS it was validated against (MAVProxy 1.8.74,
+default 255/230); transfers additionally converge on duplicated relay
+traffic. Mission support is ArduPilot SITL validated only — no
+real-aircraft claim. There is no mission start/execution command yet:
+uploading does not switch the vehicle to AUTO.
 
 Not implemented — current scope only, not a roadmap promise:
 
