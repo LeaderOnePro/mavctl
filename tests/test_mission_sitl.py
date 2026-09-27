@@ -12,16 +12,24 @@ Safety contract for this module:
   daemon stop, temporary runtime directory removal.
 
 Identity: mavctl runs with the distinct GCS identity 254:190 (MAVProxy
-defaults to 255:230), so the two can share a link without crossing each
-other's mission transfers ([FACT] ArduPilot rejects mission items whose
-sender identity differs from the MISSION_COUNT sender). MAVProxy relays
-duplicate every packet in both directions when it has more than one --out
-link; the adapter's upload converges on that (request debounce + stray
-ACK tolerance) and the SITL suite exercises both environments:
+1.8.74 defaults to 255:230), so the two do not share an on-wire identity
+([FACT] ArduPilot rejects mission items whose sender identity differs from
+the MISSION_COUNT sender). MAVProxy relays duplicate every packet in both
+directions when it has more than one --out link; the adapter's upload
+converges on that (request debounce + stray ACK tolerance) and the suite
+runs against both topologies:
 
-- default: a DEDICATED MAVProxy-free SITL instance (protocol isolation);
-- MAVCTL_SITL_CONNECT=udp:127.0.0.1:14550: the shared sim_vehicle link with
-  MAVProxy in-band (coexistence acceptance).
+- default (MAVCTL_SITL_CONNECT unset): the standard shared sim_vehicle link
+  `udp:127.0.0.1:14550` with MAVProxy in-band — the validated coexistence
+  environment, same as tests/test_sitl.py;
+- optional isolation: a DEDICATED MAVProxy-free instance
+  (`sim_vehicle.py -v ArduCopter --instance 1 --no-mavproxy --no-rebuild`,
+  SERIAL0 tcp:127.0.0.1:5770) via
+  `MAVCTL_SITL_CONNECT=tcp:127.0.0.1:5770` — an optional protocol-isolation
+  diagnostic, not a normal test prerequisite.
+
+Real aircraft are out of scope: every endpoint must be loopback (enforced
+below), and no flight control is ever exercised.
 """
 
 from __future__ import annotations
@@ -42,12 +50,14 @@ from mavctl.models import (
 
 pytestmark = pytest.mark.sitl
 
-# Default endpoint: a DEDICATED MAVProxy-free SITL instance:
+# Default endpoint: the standard shared sim_vehicle link with MAVProxy
+# in-band (udp:127.0.0.1:14550) — same environment as tests/test_sitl.py;
+# one plain `sim_vehicle.py -v ArduCopter` covers the whole -m sitl suite.
+# Optional isolation: run a DEDICATED MAVProxy-free instance and point the
+# env var at it (protocol-isolation diagnostic, not a test prerequisite):
 #   sim_vehicle.py -v ArduCopter --instance 1 --no-mavproxy --no-rebuild
-# (SERIAL0 tcp server on 127.0.0.1:5770). For the MAVProxy-coexistence
-# acceptance, point MAVCTL_SITL_CONNECT at the shared sim_vehicle link:
-#   MAVCTL_SITL_CONNECT=udp:127.0.0.1:14550 uv run pytest -m sitl
-_CONNECT = os.environ.get("MAVCTL_SITL_CONNECT", "tcp:127.0.0.1:5770")
+#   MAVCTL_SITL_CONNECT=tcp:127.0.0.1:5770 uv run pytest tests/test_mission_sitl.py -q
+_CONNECT = os.environ.get("MAVCTL_SITL_CONNECT", "udp:127.0.0.1:14550")
 
 if not (
     _CONNECT.startswith("udp:127.0.0.1")
@@ -70,6 +80,30 @@ def _await_connected(timeout: float = 20.0) -> dict[str, Any]:
         time.sleep(0.5)
         state = _status()
     return state
+
+
+def _await_ground_evidence(timeout: float = 20.0) -> dict[str, Any]:
+    """Wait until the daemon caches guard-usable ground evidence.
+
+    A freshly spawned daemon knows nothing until the first
+    GLOBAL_POSITION_INT / EXTENDED_SYS_STATE arrives; the mission guards
+    rightly refuse to act on an unknown ground state, so every test must
+    wait for position/landed-state telemetry before exercising mission
+    operations (a race here would surface as a spurious
+    ``ground_state_unknown`` rejection).
+    """
+
+    deadline = time.monotonic() + timeout
+    state = _status()
+    while time.monotonic() < deadline:
+        if (
+            state.get("relative_alt_m") is not None
+            or state.get("landed_state") is not None
+        ):
+            return state
+        time.sleep(0.25)
+        state = _status()
+    pytest.fail("no ground evidence (position/landed_state) from SITL within timeout")
 
 
 def _await_position(timeout: float = 20.0) -> tuple[float, float]:
@@ -148,6 +182,7 @@ def daemon(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
                 "SITL must be disarmed for mission protocol tests; refusing to "
                 "run against an armed vehicle"
             )
+        _await_ground_evidence()
         yield
     finally:
         _best_effort_cleanup()
@@ -282,8 +317,8 @@ def test_mission_transfer_survives_relay_duplicated_traffic(daemon: None) -> Non
     twice. The upload must still converge (no INVALID_SEQUENCE abort, no
     premature-ACCEPTED abort) and the stored mission must be intact.
 
-    Evidenced on the shared sim_vehicle link (MAVCTL_SITL_CONNECT=
-    udp:127.0.0.1:14550) where this is the live topology; on the dedicated
+    Evidenced on the default shared sim_vehicle endpoint
+    (udp:127.0.0.1:14550) where this is the live topology; on the optional
     MAVProxy-free endpoint the test still guards the adapter logic.
     """
 
@@ -316,6 +351,7 @@ def test_cleanup_leaves_empty_mission_across_daemon_restart(daemon: None) -> Non
     process.spawn(_CONNECT, heartbeat_timeout=3.0, source_system=254)
     state = _await_connected()
     assert state.get("connected") is True
+    _await_ground_evidence()
 
     _clear_mission()
     mission = _download_mission()

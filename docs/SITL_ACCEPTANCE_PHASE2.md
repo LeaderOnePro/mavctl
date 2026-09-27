@@ -364,22 +364,35 @@ uv run mavctl daemon stop
 ## 8g. Phase 3A mission 协议验收
 
 mission upload / download / clear 已实现并通过 mock 协议测试，并已完成
-SITL conformance 验收（2026-09）。两个环境均已实测通过：
+SITL conformance 验收（2026-09）。两个环境均已实测通过。标准测试前提
+只是一个普通 SITL + MAVProxy 环境，与既有 flight SITL tests 相同：
 
-**环境 1 — 专用无带内 GCS 实例（协议隔离环境）**：
+```bash
+sim_vehicle.py -v ArduCopter --out udp:127.0.0.1:14550
+uv run pytest -m sitl        # flight + mission 全套，默认 udp:127.0.0.1:14550
+```
+
+**默认环境 — 共享链路（MAVProxy 共存验收，已验证兼容环境）**：
+`tests/test_mission_sitl.py` 与 `tests/test_sitl.py` 共用
+`MAVCTL_SITL_CONNECT`，默认 `udp:127.0.0.1:14550`。shared MAVProxy
+topology 是已验证兼容环境，必须继续覆盖
+upload → download → clear → empty readback。
+
+**可选隔离环境（非普通测试前提）**：专用无带内 GCS 实例仅作为协议隔离
+诊断：
 
 ```bash
 sim_vehicle.py -v ArduCopter --instance 1 --no-mavproxy --no-rebuild
-# SERIAL0 tcp:127.0.0.1:5770；测试经 MAVCTL_SITL_CONNECT 指向它
-MAVCTL_SITL_CONNECT=tcp:127.0.0.1:5770 uv run pytest tests/test_mission_sitl.py -m sitl
+MAVCTL_SITL_CONNECT=tcp:127.0.0.1:5770 uv run pytest tests/test_mission_sitl.py -q
 ```
 
-**环境 2 — 默认共享链路（MAVProxy 共存验收，回归测试）**：
+所有 endpoint 必须是 loopback；真实飞机不在测试范围。
 
-```bash
-sim_vehicle.py -v ArduCopter   # 默认 14550，带 MAVProxy
-MAVCTL_SITL_CONNECT=udp:127.0.0.1:14550 uv run pytest tests/test_mission_sitl.py -m sitl
-```
+**Reproducibility note（ArduPilot provenance）**：Phase 3A mission
+conformance was validated against a locally modified ArduPilot checkout at
+revision `4c98c9221a`. The only reviewed source modification was a macOS
+host-build/linker workaround in `AP_FWVersion.h`; it does not alter
+mission/GCS runtime code.
 
 `[FACT]`（SITL 实测 + 源码证实）：ArduPilot 将 storage slot 0 保留给
 vehicle home——首个追加的 item 会自动先写入 home（`AP_Mission::add_cmd`），
