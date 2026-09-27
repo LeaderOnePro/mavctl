@@ -6,6 +6,10 @@ import queue
 from types import SimpleNamespace
 from typing import Any
 
+# MAV_CMD_SET_MESSAGE_INTERVAL — the adapter's best-effort stream scheduling
+# command (position/home streams), never transaction traffic.
+MAV_CMD_SET_MESSAGE_INTERVAL = 511
+
 
 class FakeMsg:
     """A stand-in for a pymavlink message object.
@@ -60,6 +64,13 @@ class FakeMaster:
         # (command:int, confirmation:int, params:tuple[float, ...]); mission
         # sends record ("MISSION_*", args:tuple[Any, ...]).
         self.sent: list[tuple[Any, ...]] = []
+        # Best-effort link-configuration commands (stream scheduling) are
+        # recorded separately so ``sent`` keeps meaning "transaction traffic
+        # under test": the adapter emits MAV_CMD_SET_MESSAGE_INTERVAL once
+        # on the first heartbeat / mission session, and transaction tests
+        # assert on the first *transaction* send. Everything remains
+        # observable via ``link_setup``.
+        self.link_setup: list[tuple[Any, ...]] = []
         self.mav = SimpleNamespace(
             command_long_send=self._command_long_send,
             request_data_stream_send=lambda *a, **k: None,
@@ -74,7 +85,10 @@ class FakeMaster:
     def _command_long_send(
         self, tsys: int, tcomp: int, command: int, confirmation: int, *params: float
     ) -> None:
-        self.sent.append((command, confirmation, params))
+        if command == MAV_CMD_SET_MESSAGE_INTERVAL:
+            self.link_setup.append((command, confirmation, params))
+        else:
+            self.sent.append((command, confirmation, params))
 
     def mode_mapping(self) -> dict[str, int]:
         return dict(self._modes)
