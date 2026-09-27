@@ -792,14 +792,36 @@ class PymavlinkAdapter:
                 self._end_mission_session()
 
     def _check_home_slot_item(self, msg: Any) -> None:
-        """Fail the download atomically if download seq 0 is not home-shaped."""
+        """Fail the download atomically unless download seq 0 is verifiably
+        the ArduPilot home slot (see :func:`is_home_slot_item`): canonical
+        wire form AND coordinates/altitude matching the cached
+        ``HOME_POSITION`` from the locked autopilot."""
 
-        if is_home_slot_item(command=int(msg.command), frame=int(msg.frame)):
+        home = self._home
+        if is_home_slot_item(
+            command=int(msg.command),
+            frame=int(msg.frame),
+            current=int(msg.current),
+            autocontinue=int(msg.autocontinue),
+            param1=float(msg.param1),
+            param2=float(msg.param2),
+            param3=float(msg.param3),
+            param4=float(msg.param4),
+            x=int(msg.x),
+            y=int(msg.y),
+            z=float(msg.z),
+            home_lat_deg=home.lat_deg if home is not None else None,
+            home_lon_deg=home.lon_deg if home is not None else None,
+            home_alt_msl_m=home.alt_msl_m if home is not None else None,
+        ):
             return
         raise MissionItemUnsupportedError(
-            "downloaded seq 0 is not the ArduPilot home slot "
-            "(expected MAV_CMD_NAV_WAYPOINT in the GLOBAL frame); the vehicle "
-            "does not follow the ArduPilot mission wire convention",
+            "downloaded seq 0 is not verifiably the ArduPilot home slot "
+            "(expected the canonical home waypoint — MAV_CMD_NAV_WAYPOINT, "
+            "GLOBAL frame, default params — matching the HOME_POSITION "
+            "received from this vehicle); the vehicle may not follow the "
+            "ArduPilot mission wire convention or HOME_POSITION has not "
+            "arrived yet",
             seq=0,
             command=int(msg.command),
             frame=int(msg.frame),
@@ -1260,7 +1282,10 @@ class PymavlinkAdapter:
 
     def _request_streams_once(self) -> None:
         """Best-effort: ask for the extended-status stream so EXTENDED_SYS_STATE
-        (landed_state) and HOME_POSITION populate. Runs on the reader thread."""
+        (landed_state) populates, and schedule a 1 Hz HOME_POSITION stream so
+        the vehicle home is cached for the mission download's home-slot
+        verification. Runs on the reader thread after the autopilot target is
+        locked; failures never break the link."""
 
         if self._streams_requested or self._master is None:
             return
@@ -1272,6 +1297,26 @@ class PymavlinkAdapter:
                 mavutil.mavlink.MAV_DATA_STREAM_EXTENDED_STATUS,
                 2,  # Hz
                 1,  # start
+            )
+        # HOME_POSITION is not part of ArduPilot's default stream set and a
+        # relay GCS does not forward what it never requested — ask the
+        # vehicle directly (ArduPilot maps this message id in its
+        # SET_MESSAGE_INTERVAL table [FACT]). The mission download does not
+        # depend on this succeeding: without a cached home it fails
+        # atomically per the lossless policy.
+        with contextlib.suppress(Exception), self._send_lock:
+            self._master.mav.command_long_send(
+                self._target_system,
+                self._target_component,
+                mavutil.mavlink.MAV_CMD_SET_MESSAGE_INTERVAL,
+                0,  # confirmation
+                float(mavutil.mavlink.MAVLINK_MSG_ID_HOME_POSITION),
+                1000000.0,  # 1 Hz in microseconds
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
             )
 
     def _flightmode_string(self, msg: Any) -> str | None:

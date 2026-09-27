@@ -83,9 +83,33 @@ def _item(seq: int, command: int = 16, frame: int = 6, **fields: Any) -> FakeMsg
 
 def _home_item(seq: int = 0) -> FakeMsg:
     """The vehicle-managed home entry as ArduPilot emits it on download
-    ([FACT] SITL): MAV_CMD_NAV_WAYPOINT, GLOBAL (MSL) frame, home position."""
+    ([FACT] SITL): MAV_CMD_NAV_WAYPOINT, GLOBAL (MSL) frame, canonical
+    default params, coordinates matching the cached HOME_POSITION below."""
 
-    return _item(seq, command=16, frame=0, x=-353632621, y=1491652374, z=584.09)
+    return _item(seq, command=16, frame=0, x=_HOME_LAT_1E7, y=_HOME_LON_1E7,
+                 z=_HOME_ALT_M)
+
+
+# The canonical home the mock vehicle reports and emits: HOME_POSITION values
+# (int32 1e7 deg / int32 mm) and the wire seq-0 item derived from them.
+_HOME_LAT_1E7 = -353632621
+_HOME_LON_1E7 = 1491652374
+_HOME_ALT_M = 584.09
+
+
+def _cache_home(adapter: PymavlinkAdapter) -> None:
+    """Deliver a HOME_POSITION through the real reader-thread handler so the
+    adapter caches the vehicle home used by the home-slot matcher."""
+
+    adapter._handle_message(
+        _msg(
+            "HOME_POSITION",
+            latitude=_HOME_LAT_1E7,
+            longitude=_HOME_LON_1E7,
+            altitude=int(_HOME_ALT_M * 1000),
+        )
+    )
+    assert adapter._home is not None, "HOME_POSITION was not cached"
 
 
 def _wait_until(predicate: Callable[[], bool], timeout: float = 5.0) -> bool:
@@ -615,6 +639,7 @@ def test_download_happy_path() -> None:
     assert _wait_until(lambda: len(_sent(master, "MISSION_REQUEST_LIST")) >= 1)
     adapter._handle_message(_msg("MISSION_COUNT", count=3, mission_type=0))
     assert _wait_until(lambda: _request_seqs(master) == [0])
+    _cache_home(adapter)
     adapter._handle_message(_home_item(0))
     assert _wait_until(lambda: _request_seqs(master) == [0, 1])
     adapter._handle_message(
@@ -716,6 +741,7 @@ def test_download_canonical_home_slot_is_accepted_and_excluded(
     runner = _Runner(lambda: adapter.download_mission())
     runner.start()
     assert _start_download(adapter, master, count=2)
+    _cache_home(adapter)
     adapter._handle_message(_home_item(0))  # WAYPOINT + GLOBAL: home-shaped
     adapter._handle_message(_item(1, command=22, frame=3))  # first v1 item
     assert runner.join(timeout=10)
@@ -729,11 +755,95 @@ def test_download_canonical_home_slot_is_accepted_and_excluded(
     assert _request_seqs(master) == [0, 1]
 
 
+def _seq0_global_waypoint(**overrides: Any) -> FakeMsg:
+    """A GLOBAL-frame first waypoint item with overridable fields."""
+
+    fields: dict[str, Any] = {
+        "command": 16, "frame": 0, "x": _HOME_LAT_1E7, "y": _HOME_LON_1E7,
+        "z": _HOME_ALT_M,
+    }
+    fields.update(overrides)
+    return _item(0, **fields)
+
+
+def test_download_seq0_global_waypoint_wrong_coordinates_is_unsupported(
+    fast_timeouts: None,
+) -> None:
+    """A GLOBAL-frame waypoint at seq 0 whose coordinates differ from the
+    cached HOME_POSITION is a REAL first item (non-ArduPilot convention or a
+    foreign GCS transfer) — it must never be silently excluded as home."""
+    adapter, master = _adapter()
+    runner = _Runner(lambda: adapter.download_mission())
+    runner.start()
+    assert _start_download(adapter, master, count=2)
+    _cache_home(adapter)
+    adapter._handle_message(
+        _seq0_global_waypoint(x=_HOME_LAT_1E7 + 5000)  # ~5.5 m south
+    )
+    assert runner.join(timeout=10)
+    assert isinstance(runner.error, MissionItemUnsupportedError)
+    assert runner.error.seq == 0
+    assert not isinstance(runner.result, DownloadedMissionV1)
+
+
+def test_download_seq0_global_waypoint_wrong_altitude_is_unsupported(
+    fast_timeouts: None,
+) -> None:
+    """A GLOBAL-frame waypoint at seq 0 whose MSL altitude differs from the
+    cached HOME_POSITION is not the home entry — atomic rejection."""
+    adapter, master = _adapter()
+    runner = _Runner(lambda: adapter.download_mission())
+    runner.start()
+    assert _start_download(adapter, master, count=2)
+    _cache_home(adapter)
+    adapter._handle_message(_seq0_global_waypoint(z=_HOME_ALT_M + 2.5))
+    assert runner.join(timeout=10)
+    assert isinstance(runner.error, MissionItemUnsupportedError)
+    assert runner.error.seq == 0
+    assert not isinstance(runner.result, DownloadedMissionV1)
+
+
+def test_download_seq0_global_waypoint_without_home_position_is_unsupported(
+    fast_timeouts: None,
+) -> None:
+    """Without a cached HOME_POSITION the seq-0 item cannot be verified as
+    home (guessing is forbidden) — atomic rejection, never silent exclusion."""
+    adapter, master = _adapter()
+    runner = _Runner(lambda: adapter.download_mission())
+    runner.start()
+    assert _start_download(adapter, master, count=2)
+    assert adapter._home is None  # no HOME_POSITION received
+    adapter._handle_message(_home_item(0))  # canonical form, but unverifiable
+    assert runner.join(timeout=10)
+    assert isinstance(runner.error, MissionItemUnsupportedError)
+    assert runner.error.seq == 0
+    assert not isinstance(runner.result, DownloadedMissionV1)
+
+
+def test_download_seq0_non_canonical_home_form_is_unsupported(
+    fast_timeouts: None,
+) -> None:
+    """Even with matching coordinates, a seq-0 GLOBAL waypoint carrying
+    non-default mission params is not the verified canonical home wire form
+    (ArduPilot zeroes the packet for home) — atomic rejection."""
+    adapter, master = _adapter()
+    runner = _Runner(lambda: adapter.download_mission())
+    runner.start()
+    assert _start_download(adapter, master, count=2)
+    _cache_home(adapter)
+    adapter._handle_message(_seq0_global_waypoint(param1=5.0))
+    assert runner.join(timeout=10)
+    assert isinstance(runner.error, MissionItemUnsupportedError)
+    assert runner.error.seq == 0
+    assert not isinstance(runner.result, DownloadedMissionV1)
+
+
 def test_download_duplicate_item_not_refetched() -> None:
     adapter, master = _adapter()
     runner = _Runner(lambda: adapter.download_mission())
     runner.start()
     assert _start_download(adapter, master, count=3)
+    _cache_home(adapter)
     adapter._handle_message(_home_item(0))
     adapter._handle_message(_item(1))
     adapter._handle_message(_item(1))  # duplicate retransmission
@@ -750,6 +860,7 @@ def test_download_out_of_order_buffered() -> None:
     runner = _Runner(lambda: adapter.download_mission())
     runner.start()
     assert _start_download(adapter, master, count=3)
+    _cache_home(adapter)
     adapter._handle_message(_item(2, command=20))  # arrives early: buffered
     adapter._handle_message(_home_item(0))
     adapter._handle_message(_item(1))
@@ -765,6 +876,7 @@ def test_download_missing_item_times_out_atomically(fast_timeouts: None) -> None
     runner = _Runner(lambda: adapter.download_mission())
     runner.start()
     assert _start_download(adapter, master, count=3)
+    _cache_home(adapter)
     adapter._handle_message(_home_item(0))
     adapter._handle_message(_item(1))
     assert _wait_until(lambda: _request_seqs(master) == [0, 1, 2])
@@ -781,6 +893,7 @@ def test_download_unsupported_command_atomic(fast_timeouts: None) -> None:
     runner = _Runner(lambda: adapter.download_mission())
     runner.start()
     assert _start_download(adapter, master, count=3)
+    _cache_home(adapter)
     adapter._handle_message(_home_item(0))
     adapter._handle_message(_item(1, command=999))
     assert runner.join(timeout=10)
@@ -796,6 +909,7 @@ def test_download_unsupported_frame_atomic() -> None:
     runner = _Runner(lambda: adapter.download_mission())
     runner.start()
     assert _start_download(adapter, master, count=3)
+    _cache_home(adapter)
     adapter._handle_message(_home_item(0))
     adapter._handle_message(_item(1, frame=0))
     assert runner.join(timeout=10)
@@ -838,6 +952,7 @@ def test_download_courtesy_ack_failure_is_non_fatal(fast_timeouts: None) -> None
     runner = _Runner(lambda: adapter.download_mission())
     runner.start()
     assert _start_download(adapter, master, count=2)
+    _cache_home(adapter)
     adapter._handle_message(_home_item(0))
     adapter._handle_message(_item(1, command=22))
     assert runner.join(timeout=10)

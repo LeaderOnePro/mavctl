@@ -22,6 +22,7 @@ from mavctl.models import (
     MissionV1,
     MissionWaypoint,
     UnsupportedRemoteMissionItem,
+    is_home_slot_item,
     mission_item_from_remote,
     mission_item_to_int_fields,
 )
@@ -326,6 +327,69 @@ def test_remote_unsupported_frame_rejected() -> None:
             seq=0, command=MISSION_COMMAND_WAYPOINT, frame=2,
             param1=0.0, param2=0.0, param3=0.0, param4=0.0, x=1, y=2, z=3.0,
         )
+
+
+# -- home-slot matcher (ArduPilot compatibility rule, evidence-gated) ---------
+
+
+def _home_kwargs(**overrides: Any) -> dict[str, Any]:
+    """Keyword arguments describing the canonical ArduPilot home emission
+    matching a cached HOME_POSITION."""
+
+    kwargs: dict[str, Any] = {
+        "command": 16,
+        "frame": 0,
+        "current": 0,
+        "autocontinue": 1,
+        "param1": 0.0,
+        "param2": 0.0,
+        "param3": 0.0,
+        "param4": 0.0,
+        "x": -353632621,
+        "y": 1491652374,
+        "z": 584.09,
+        "home_lat_deg": -353632621 / 1e7,
+        "home_lon_deg": 1491652374 / 1e7,
+        "home_alt_msl_m": 584.09,
+    }
+    kwargs.update(overrides)
+    return kwargs
+
+
+def test_home_slot_matches_canonical_item_with_cached_home() -> None:
+    assert is_home_slot_item(**_home_kwargs()) is True
+
+
+def test_home_slot_rejects_wrong_command_or_frame() -> None:
+    assert is_home_slot_item(**_home_kwargs(command=22)) is False
+    assert is_home_slot_item(**_home_kwargs(frame=6)) is False
+
+
+def test_home_slot_rejects_non_canonical_wire_form() -> None:
+    assert is_home_slot_item(**_home_kwargs(current=1)) is False
+    assert is_home_slot_item(**_home_kwargs(autocontinue=0)) is False
+    assert is_home_slot_item(**_home_kwargs(param1=5.0)) is False
+    assert is_home_slot_item(**_home_kwargs(param4=1.0)) is False
+
+
+def test_home_slot_requires_cached_home_position() -> None:
+    assert is_home_slot_item(**_home_kwargs(home_lat_deg=None)) is False
+    assert is_home_slot_item(**_home_kwargs(home_lon_deg=None)) is False
+    assert is_home_slot_item(**_home_kwargs(home_alt_msl_m=None)) is False
+
+
+def test_home_slot_coordinate_tolerance_boundaries() -> None:
+    # ±1 unit at the 1e7 scale is inside the documented tolerance...
+    assert is_home_slot_item(**_home_kwargs(x=-353632620)) is True
+    assert is_home_slot_item(**_home_kwargs(y=1491652375)) is True
+    # ...±2 units (≈22 cm) is not.
+    assert is_home_slot_item(**_home_kwargs(x=-353632619)) is False
+    assert is_home_slot_item(**_home_kwargs(y=1491652376)) is False
+
+
+def test_home_slot_altitude_tolerance_boundaries() -> None:
+    assert is_home_slot_item(**_home_kwargs(z=584.095)) is True  # float32 noise
+    assert is_home_slot_item(**_home_kwargs(z=584.11)) is False  # > ±1 cm
 
 
 def test_remote_relative_alt_frame_equivalence() -> None:

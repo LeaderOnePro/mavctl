@@ -106,6 +106,26 @@ def _await_ground_evidence(timeout: float = 20.0) -> dict[str, Any]:
     pytest.fail("no ground evidence (position/landed_state) from SITL within timeout")
 
 
+def _await_home_position(timeout: float = 20.0) -> dict[str, Any]:
+    """Wait until the daemon caches the vehicle's HOME_POSITION.
+
+    The download's home-slot verification must match the seq-0 item against
+    the HOME_POSITION received from this vehicle (never a positional guess),
+    so the tests wait for the verified home before exercising mission
+    operations. The adapter requests a 1 Hz HOME_POSITION stream when the
+    mission session opens (MAV_CMD_SET_MESSAGE_INTERVAL).
+    """
+
+    deadline = time.monotonic() + timeout
+    state = _status()
+    while time.monotonic() < deadline:
+        if state.get("home_position") is not None:
+            return state
+        time.sleep(0.25)
+        state = _status()
+    pytest.fail("no HOME_POSITION cached by the daemon within timeout")
+
+
 def _await_position(timeout: float = 20.0) -> tuple[float, float]:
     """Wait for a vehicle position fix and return (lat_deg, lon_deg)."""
 
@@ -183,6 +203,7 @@ def daemon(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
                 "run against an armed vehicle"
             )
         _await_ground_evidence()
+        _await_home_position()
         yield
     finally:
         _best_effort_cleanup()
@@ -352,6 +373,7 @@ def test_cleanup_leaves_empty_mission_across_daemon_restart(daemon: None) -> Non
     state = _await_connected()
     assert state.get("connected") is True
     _await_ground_evidence()
+    _await_home_position()
 
     _clear_mission()
     mission = _download_mission()

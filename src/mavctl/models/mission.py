@@ -45,6 +45,18 @@ MISSION_TYPE_MISSION = 0
 ARDUPILOT_HOME_SLOT_SEQ = 0
 """Wire sequence of the vehicle-managed home slot on ArduPilot."""
 
+# Home-slot verification tolerances (ArduPilot home-slot compatibility rule,
+# not a universal MAVLink rule; see design doc §E).
+#
+# Coordinates: both sides are int32 at the 1e7-degree scale (mission item x/y
+# and HOME_POSITION latitude/longitude), so the wire values should be equal;
+# the tolerance of ±1 unit (1e-7 deg ≈ 1.1 cm) only absorbs boundary rounding.
+HOME_SLOT_COORD_TOLERANCE_INT = 1
+# Altitude: ArduPilot emits the item z as a float32 (cm * 0.01), while the
+# HOME_POSITION altitude is int32 mm. The resulting error is on the order of
+# 1e-4 m; ±1 cm is a small, explicit bound well above it.
+HOME_SLOT_ALT_TOLERANCE_M = 0.01
+
 MISSION_RESULT_NAMES: dict[int, str] = {
     0: "ACCEPTED",
     1: "ERROR",
@@ -313,18 +325,59 @@ def is_home_slot_item(
     *,
     command: int,
     frame: int,
+    current: int,
+    autocontinue: int,
+    param1: float,
+    param2: float,
+    param3: float,
+    param4: float,
+    x: int,
+    y: int,
+    z: float,
+    home_lat_deg: float | None,
+    home_lon_deg: float | None,
+    home_alt_msl_m: float | None,
 ) -> bool:
-    """Recognize the vehicle-managed home entry at download seq 0.
+    """Recognize the vehicle-managed home entry at download seq 0 — with
+    sufficient evidence only.
 
-    ArduPilot stores home as a ``MAV_CMD_NAV_WAYPOINT`` and emits it in the
-    GLOBAL (MSL) frame — ``mission_cmd_to_mavlink_int`` sets frame 0 for any
-    non-relative location [FACT, SITL-verified]. A v1 item can never have
-    this signature (v1 emits relative frames only), so a seq-0 item that does
-    not match is treated as a real first item of a non-ArduPilot-convention
-    vehicle and fails the download atomically instead of being misread.
+    This is the **ArduPilot home-slot compatibility rule**, not a universal
+    MAVLink rule: ArduPilot stores home at storage slot 0 as a
+    ``MAV_CMD_NAV_WAYPOINT`` and emits it in the GLOBAL (MSL) frame
+    (``mission_cmd_to_mavlink_int`` sets frame 0 for non-relative locations
+    [FACT, SITL-verified]). A GLOBAL-frame first waypoint on any other
+    vehicle is a real item and must NOT be silently excluded, so every
+    criterion below must hold; a single miss fails the download atomically
+    instead:
+
+    - ``command``/``frame`` match the ArduPilot home emission;
+    - the wire form is the verified canonical one (``current=0``,
+      ``autocontinue=1``, ``param1..4 = 0`` — from the SITL read-back and
+      ``mission_cmd_to_mavlink_int``, which zeroes the packet and only sets
+      ``autocontinue``/location for a home waypoint);
+    - mavctl has **received** ``HOME_POSITION`` from the locked autopilot
+      (``home_*`` arguments non-None; never the current vehicle position);
+    - the item coordinates match the cached home position within
+      :data:`HOME_SLOT_COORD_TOLERANCE_INT` (at the 1e7 int scale);
+    - the item altitude matches the cached home MSL altitude within
+      :data:`HOME_SLOT_ALT_TOLERANCE_M`.
     """
 
-    return command == MISSION_COMMAND_WAYPOINT and frame == MISSION_FRAME_GLOBAL
+    if command != MISSION_COMMAND_WAYPOINT or frame != MISSION_FRAME_GLOBAL:
+        return False
+    if (current, autocontinue) != (0, 1):
+        return False
+    if (param1, param2, param3, param4) != (0.0, 0.0, 0.0, 0.0):
+        return False
+    if home_lat_deg is None or home_lon_deg is None or home_alt_msl_m is None:
+        # HOME_POSITION never received: the seq-0 item cannot be verified as
+        # the vehicle home, and guessing is forbidden by the lossless policy.
+        return False
+    if abs(x - round(home_lat_deg * 1e7)) > HOME_SLOT_COORD_TOLERANCE_INT:
+        return False
+    if abs(y - round(home_lon_deg * 1e7)) > HOME_SLOT_COORD_TOLERANCE_INT:
+        return False
+    return abs(z - home_alt_msl_m) <= HOME_SLOT_ALT_TOLERANCE_M
 
 
 def mission_item_from_remote(
