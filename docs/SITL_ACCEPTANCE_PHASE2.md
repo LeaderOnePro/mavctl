@@ -421,11 +421,11 @@ ArduPilot 从不持久化它），下载时验证并排除 home。早期观察�
    ≥1 s 的重发请求驱动恢复。重复投递是该验收拓扑（sim_vehicle + MAVProxy
    双 --out 转发）的传输行为，不是 MAVProxy 缺陷。
 
-**自动化测试与手工验收的边界**：`tests/test_mission_sitl.py` 默认运行在
-隔离的无 MAVProxy loopback 实例（tcp:127.0.0.1:5770）；该套件也支持经
-`MAVCTL_SITL_CONNECT=udp:127.0.0.1:14550` 运行在共享 MAVProxy 拓扑上
-（已实测通过）。下述 CLI 级 upload → download → clear 手工验收是额外的
-兼容性覆盖，记录于本轮验收。
+**自动化测试与手工验收的边界**：`tests/test_mission_sitl.py` 的默认自动
+endpoint 是共享的 `udp:127.0.0.1:14550`（与 `tests/test_sitl.py` 一致）；
+共享 MAVProxy 拓扑此前另经 CLI 级 upload → download → clear 手工验收
+（兼容性覆盖，记录于本轮验收）。隔离的 `tcp:127.0.0.1:5770` 仅是可选的
+协议隔离诊断环境。
 
 以下为既定验收步骤（全部为非执行类操作：不起飞、不切 AUTO、
 不发送 mission start）：

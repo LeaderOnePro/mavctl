@@ -122,10 +122,14 @@ partial mission. Never assume it failed cleanly:
 ## mission_item_unsupported (exit 6, mission download)
 
 The remote mission contains items mavctl v1 cannot represent (unsupported
-command or frame), or download seq 0 is not the ArduPilot home slot
-(mavctl expects `MAV_CMD_NAV_WAYPOINT` in the GLOBAL frame there — anything
-else means the vehicle does not follow the ArduPilot mission wire
-convention). Nothing was modified; use a full GCS to inspect that mission.
+command or frame), or download seq 0 could not be verified as the ArduPilot
+home slot: mavctl excludes seq 0 only when it is the canonical home waypoint
+(`MAV_CMD_NAV_WAYPOINT`, GLOBAL frame, default params) whose coordinates and
+altitude match the `HOME_POSITION` received from the vehicle. A mismatch —
+or `HOME_POSITION` not received yet — means the vehicle does not follow the
+ArduPilot mission wire convention or the home stream is missing; retry once
+the link is fully up, otherwise use a full GCS to inspect that mission.
+Nothing was modified.
 
 ## altitude_limit / invalid_altitude (exit 5 / exit 2, takeoff)
 
