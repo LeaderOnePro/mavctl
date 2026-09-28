@@ -451,12 +451,15 @@ vehicle 对完成后的重复投達回答 `MAV_MISSION_ERROR`（type=1）×3，�
 "rejected: ERROR"、下一 upload U1 被误杀、download COUNT 被误报 denied）。
 最终修复是 **session settle quarantine**（design §D.0.1）：新 mission
 session 开启前以 inactive 状态度过有界的 0.25 s settle 窗口，reader 线程
-在门口丢弃全部在途残留；开门后的 ack 均为当前事务应答——U1 非零 ACK 保留
-真实 `mission_rejected` 语义（NO_SPACE/UNSUPPORTED/DENIED 不被吞掉），
-U2/U3 非零 ACK 保持 uncertain，clear 的非零 ACK 直接进入权威 read-back
-裁决（count==0 才 success）。不按 ACK type 粗暴吞掉任何类别的 ACK。mock
-回归测试固化 A–E 五条路径；fixture 增加 `_await_mission_empty()`
-preflight（每个 mission 测试开始前以只读 read-back 确认远端计划为空）。
+在窗口内丢弃观察到的短寿命 relay 残留。这是 mavctl 的 relay 兼容性缓解
+措施——MAVLink `MISSION_ACK` 没有事务标识，**不是**完美的协议级事务关联；
+开门后的 ACK 按**当前事务**处理（策略而非证明）：U1 非零 ACK 按真实拒绝
+上报（NO_SPACE/UNSUPPORTED/DENIED → `mission_rejected`，不被吞掉），
+U2/U3 非零 ACK 保持 `remote_mission_state_uncertain`，clear 的非零 ACK
+直接进入权威 read-back 裁决（count==0 才 success）；歧义永远不会造成
+假成功，无法安全归因时一律保守上报。mock 回归测试固化 A–E 五条路径；
+fixture 增加 `_await_mission_empty()` preflight（每个 mission 测试开始
+前以只读 read-back 确认远端计划为空）。
 
 超时/不确定路径（`remote_mission_state_uncertain`，exit 6）仅能在受控
 harness 中验证（见 docs/design/mission-protocol-v1.md §I）。

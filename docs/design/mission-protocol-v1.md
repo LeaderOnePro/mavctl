@@ -391,7 +391,7 @@ request-driven):
 | --- | --- | --- |
 | duplicate `MISSION_REQUEST(_INT)` for a seq sent **within the last 250 ms** | suppress the re-send (skip) | the vehicle re-requests at most once per second (`wp_recv_timeout_ms = 1000`, §A.5) — a sooner duplicate is transport noise; answering it deterministically draws `INVALID_SEQUENCE` |
 | duplicate request for a seq sent **longer ago** than the debounce window | re-send (genuine loss recovery) | unchanged request-driven retry semantics |
-| `MISSION_ACK(INVALID_SEQUENCE)` mid-transfer or in the terminal window | tolerate, keep answering requests / keep waiting for the real terminal ACK | the vehicle keeps its session on `INVALID_SEQUENCE` and the ack is provably duplicate-item residue of THIS transfer (post-quarantine); the vehicle's 8 s `OPERATION_CANCELLED` still ends the terminal wait immediately as uncertain |
+| `MISSION_ACK(INVALID_SEQUENCE)` mid-transfer or in the terminal window | tolerate, keep answering requests / keep waiting for the real terminal ACK | the vehicle keeps its session on `INVALID_SEQUENCE`; post-settle this ack is handled as duplicate-item residue of this transfer (a re-delivered item the vehicle had already accepted — MAVLink acks carry no transaction id, so this is a policy, not a proof); the vehicle's 8 s `OPERATION_CANCELLED` still ends the terminal wait immediately as uncertain |
 | **other non-ACCEPTED `MISSION_ACK` with items already stored** (U2/U3) | `remote_mission_state_uncertain` immediately | ArduPilot does not roll back accepted items on a later error ACK — the remote mission is modified |
 | premature/stale `MISSION_ACK(ACCEPTED)` mid-transfer or during download COUNT wait | tolerate, keep waiting | a stale duplicate of the previous transaction's terminal ACK; a genuinely premature ACCEPTED stalls into the overall deadline → still `uncertain` |
 | everything else (future seq, out-of-range, real error ACKs, timeouts) | unchanged §D behavior | — |
@@ -412,15 +412,28 @@ by ACK type:
   door; the wait never blocks status/telemetry (mission lock only) and never
   touches the COMMAND_ACK quarantine; when the previous session ended before
   the window already elapsed, no wait happens;
-- after the settle the session records `_session_start_mono`; every inbox
-  entry is current-session by construction (delivery is gated on the open
-  session);
-- consequently **U1 non-ACCEPTED acks retain genuine `mission_rejected`
-  semantics** (they can only be the vehicle's answer to the current
-  `MISSION_COUNT`), U2/U3 non-ACCEPTED acks remain `uncertain`, and no
-  relay residue can mask either. Assumption, documented: residue delayed
-  beyond the settle window would surface as a false rejection — never
-  observed (≤5 ms), and the window is configurable.
+- after the settle the session records `_session_start_mono`, and incoming
+  mission messages are handled as belonging to that session.
+
+**Correlation limits** (documented, not hidden): MAVLink `MISSION_ACK`
+carries no transaction identifier, so the settle window is a mavctl
+relay-compatibility mitigation based on the observed short-lived duplicate
+relay traffic in the validated SITL topology — **not** perfect
+protocol-level transaction correlation. Residue delayed beyond the settle
+window may be treated as a current-session response; such ambiguity must
+never create a false success. Accordingly:
+
+- a U1 non-ACCEPTED ack is handled as `mission_rejected` — this is the v1
+  processing policy after the settle window (the vehicle's synchronous
+  answers to a `MISSION_COUNT` are exactly these rejections), not a proof
+  of attribution; where attribution cannot be safely established, mavctl
+  reports `remote_mission_state_uncertain` or a conservative failure
+  instead of claiming the vehicle state is unchanged;
+- U2/U3 non-ACCEPTED acks remain `remote_mission_state_uncertain`
+  (`sent_upto` is the locally sent wire sequence, never a
+  vehicle-confirmed acceptance);
+- residue delayed beyond the settle window has never been observed
+  (≤5 ms vs a 0.25 s window) and the window is configurable.
 
 `[DECIDED]` **request classification** (mavctl tracks
 `expected_next_seq`, starting at 0 after `MISSION_COUNT`): the vehicle
