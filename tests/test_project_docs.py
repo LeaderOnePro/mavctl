@@ -26,6 +26,10 @@ _SUPPORTED_COMMANDS = frozenset(
 )
 
 _MAVCTL_INVOCATION = re.compile(r"mavctl\s+([A-Za-z][A-Za-z0-9_-]*)")
+# Mission execution is Phase 3B: never a runnable command in any README.
+_MISSION_EXECUTION_INVOCATION = re.compile(
+    r"mavctl\s+mission\s+(start|pause|resume|stop|set-current)\b", re.IGNORECASE
+)
 # Unimplemented capabilities may be *named* as bare words, never invoked.
 _UNSUPPORTED_INVOCATION = re.compile(
     r"mavctl\s+(geofence|fence|rally|params?)\b", re.IGNORECASE
@@ -278,10 +282,10 @@ def test_pyproject_packaging_metadata_is_release_ready_shape() -> None:
     assert metadata_line(r'^name = "mavctl"$')
     assert metadata_line(r'^readme = "README\.md"$')
     assert metadata_line(r'^license = "MIT"$')
-    # The current development version (PEP 440 dev suffix); the release
-    # version is promoted before tagging. Published production releases
-    # remain 0.2.0 and 0.2.1 (see the claim test above).
-    assert metadata_line(r'^version = "0\.2\.2\.dev0"$')
+    # The release version promoted on the release branch. Published
+    # production releases remain 0.2.0 and 0.2.1 until the v0.3.0 tag and
+    # PyPI publication happen (see the claim test above).
+    assert metadata_line(r'^version = "0\.3\.0"$')
     assert metadata_line(r'^mavctl = "[^"]+"$')
     license_text = (_ROOT / "LICENSE").read_text(encoding="utf-8")
     assert "MIT License" in license_text
@@ -289,6 +293,51 @@ def test_pyproject_packaging_metadata_is_release_ready_shape() -> None:
 
 
 # -- 0.2.1 release preparation ----------------------------------------------
+
+
+def test_release_branch_prepares_exact_version_030() -> None:
+    # The release branch pins the package version to exactly 0.3.0 — no dev
+    # suffix, no other version.
+    assert re.search(r'(?m)^version = "0\.3\.0"$', _PYPROJECT) is not None
+    assert "0.2.2.dev0" not in _PYPROJECT
+
+
+def test_publishing_doc_records_release_state_before_030() -> None:
+    # The release-state section must state exactly what has and has not
+    # happened before the release: branch prepares 0.3.0, no PyPI
+    # publication yet, no formal v0.3.0 tag yet, Phase 3A is the feature.
+    assert "## Release state before v0.3.0" in _PUBLISHING
+    normalized = " ".join(_PUBLISHING.split())
+    assert "production PyPI publication has **not** happened yet" in normalized
+    assert "`v0.3.0` has **not** been created" in normalized
+    assert "Phase 3A Mission Protocol Core is the main feature" in normalized
+    assert "4c98c9221a" in _PUBLISHING  # SITL provenance revision
+    assert "AP_FWVersion.h" in _PUBLISHING
+
+
+def test_readme_mission_surface_lists_exactly_the_implemented_commands() -> None:
+    # The READMEs document exactly the three implemented mission commands
+    # (upload / download / clear) and never show a runnable execution
+    # command (negated prose like "no mission start command" is fine).
+    for readme in (_README, _ZH_README):
+        assert "mavctl mission upload" in readme
+        assert "mavctl mission download" in readme
+        assert "mavctl mission clear" in readme
+        assert _MISSION_EXECUTION_INVOCATION.findall(readme) == []
+
+
+def test_readme_mission_section_is_ardupilot_first_and_sitl_only() -> None:
+    # Phase 3A wording invariants: ArduPilot-first JSON, SITL-validated only,
+    # no real-aircraft claim, locally modified ArduPilot provenance.
+    for readme, sitl_marker, craft_marker in (
+        (_README, "SITL validated only", "real-aircraft"),
+        (_ZH_README, "SITL 验证", "真实飞机"),
+    ):
+        assert "ArduPilot-first" in readme or "ArduPilot-first" in _README
+        assert sitl_marker in readme
+        assert craft_marker in readme
+        assert "4c98c9221a" in readme
+        assert "AP_FWVersion.h" in readme
 
 
 def test_publishing_doc_states_022_dev_not_published() -> None:

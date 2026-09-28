@@ -84,8 +84,11 @@ suite plus a manual CLI acceptance. mavctl uses its own GCS identity
 on-wire identity with the GCS it was validated against (MAVProxy 1.8.74,
 default 255/230); transfers additionally converge on duplicated relay
 traffic. Mission support is ArduPilot SITL validated only — no
-real-aircraft claim. There is no mission start/execution command yet:
-uploading does not switch the vehicle to AUTO.
+real-aircraft claim. The SITL conformance ran against a locally modified
+ArduPilot checkout at revision `4c98c9221a`; the only reviewed source
+modification was a macOS host-build/linker workaround in `AP_FWVersion.h`
+that does not alter mission/GCS runtime code. There is no mission
+start/execution command yet: uploading does not switch the vehicle to AUTO.
 
 Not implemented — current scope only, not a roadmap promise:
 
