@@ -391,9 +391,36 @@ request-driven):
 | --- | --- | --- |
 | duplicate `MISSION_REQUEST(_INT)` for a seq sent **within the last 250 ms** | suppress the re-send (skip) | the vehicle re-requests at most once per second (`wp_recv_timeout_ms = 1000`, §A.5) — a sooner duplicate is transport noise; answering it deterministically draws `INVALID_SEQUENCE` |
 | duplicate request for a seq sent **longer ago** than the debounce window | re-send (genuine loss recovery) | unchanged request-driven retry semantics |
-| `MISSION_ACK(INVALID_SEQUENCE)` mid-transfer or in the terminal window | tolerate, keep answering requests | the vehicle keeps its session on `INVALID_SEQUENCE` (`handle_mission_item` early-returns without touching the session) |
+| `MISSION_ACK(INVALID_SEQUENCE)` mid-transfer or in the terminal window | tolerate, keep answering requests / keep waiting for the real terminal ACK | the vehicle keeps its session on `INVALID_SEQUENCE` and the ack is provably duplicate-item residue of THIS transfer (post-quarantine); the vehicle's 8 s `OPERATION_CANCELLED` still ends the terminal wait immediately as uncertain |
+| **other non-ACCEPTED `MISSION_ACK` with items already stored** (U2/U3) | `remote_mission_state_uncertain` immediately | ArduPilot does not roll back accepted items on a later error ACK — the remote mission is modified |
 | premature/stale `MISSION_ACK(ACCEPTED)` mid-transfer or during download COUNT wait | tolerate, keep waiting | a stale duplicate of the previous transaction's terminal ACK; a genuinely premature ACCEPTED stalls into the overall deadline → still `uncertain` |
 | everything else (future seq, out-of-range, real error ACKs, timeouts) | unchanged §D behavior | — |
+
+### D.0.1 Session settle quarantine (relay-residue exclusion)
+
+`[FACT]` Relay residue is temporally bounded: the re-delivered final item and
+its acks arrive within a few milliseconds of the previous transaction's end
+(SITL tlog capture: item delivered ×4 → `ACCEPTED` at t, `MAV_MISSION_ERROR`
+acks at t..t+1 ms). mavctl therefore quarantines by **session boundary**, not
+by ACK type:
+
+- every mission inbox entry carries its `recv_monotonic` receipt time;
+- a new session opens only after a bounded settle window
+  (`_MISSION_RESIDUE_SETTLE_S = 0.25 s`, ≈50× the observed residue latency)
+  has elapsed since the previous session's end — during the window the
+  session stays closed and the reader thread drops in-flight residue at the
+  door; the wait never blocks status/telemetry (mission lock only) and never
+  touches the COMMAND_ACK quarantine; when the previous session ended before
+  the window already elapsed, no wait happens;
+- after the settle the session records `_session_start_mono`; every inbox
+  entry is current-session by construction (delivery is gated on the open
+  session);
+- consequently **U1 non-ACCEPTED acks retain genuine `mission_rejected`
+  semantics** (they can only be the vehicle's answer to the current
+  `MISSION_COUNT`), U2/U3 non-ACCEPTED acks remain `uncertain`, and no
+  relay residue can mask either. Assumption, documented: residue delayed
+  beyond the settle window would surface as a false rejection — never
+  observed (≤5 ms), and the window is configurable.
 
 `[DECIDED]` **request classification** (mavctl tracks
 `expected_next_seq`, starting at 0 after `MISSION_COUNT`): the vehicle
@@ -428,7 +455,7 @@ re-counted).
 | Event | Behavior |
 | --- | --- |
 | `MISSION_ACK(MAV_MISSION_OPERATION_CANCELLED)` at any phase | the **vehicle** cancelled (its 8 s timer) → abort; phase-aware: U1 (nothing sent) → clean `mission_rejected`, U2/U3 (items stored) → `remote_mission_state_uncertain` (exit 6), hint: read-back |
-| non-ACCEPTED `MISSION_ACK` with **zero items sent** (U1) | clean `mission_rejected` (exit 6, result name + `items_sent: 0` in detail) — the vehicle stored nothing |
+| non-ACCEPTED `MISSION_ACK` with **zero items sent** (U1) | clean `mission_rejected` (exit 6, result name + `items_sent: 0` in detail) — post-quarantine this ack is the vehicle's synchronous answer to OUR `MISSION_COUNT` (count > max → NO_SPACE; allocation failure → NO_SPACE; foreign upload session → DENIED), and the vehicle stored nothing. **U1 rejections are never swallowed as relay residue** — the residue is excluded by the session settle quarantine instead |
 | non-ACCEPTED `MISSION_ACK` with **items already sent** (U2/U3) | `remote_mission_state_uncertain` (exit 6) with `detail.result_name`, `detail.items_sent`, `detail.sent_upto`, hint: read-back — ArduPilot does **not** roll back accepted items on a later error ACK (`[FACT]`: items are written to the active mission as they are accepted) |
 | terminal ACK `MAV_MISSION_ACCEPTED` **after all expected items were sent** | upload success |
 | **U1** / `items_sent == 0`: terminal ACK non-ACCEPTED (`NO_SPACE`, `UNSUPPORTED`, `DENIED`, …) | clean `mission_rejected` (exit 6, result name + `items_sent: 0` in detail) — **no mission item has been sent by mavctl**, so the remote state is known unchanged |
@@ -502,6 +529,21 @@ failure must be **non-fatal**.
 
 `[FACT]` Clearing is the `MISSION_CLEAR_ALL` **message** (id 45); **no such
 MAV_CMD exists** (§A.3).
+
+`[DECIDED]` **clear ACK → read-back verdict**: with the settle quarantine
+(§D.0.1), a non-zero `MISSION_ACK` received during the clear's ack wait is a
+current-session refusal (e.g. DENIED while a foreign upload is in flight).
+It is **not treated as final and can never produce a silent success**: the
+transaction goes straight to the mandatory count read-back, which is the
+authoritative verdict —
+
+- read-back `count == 0` → clear success (`verified`, `observed_count: 0`):
+  the goal state (empty remote plan) holds even when the ack was a refusal
+  of an already-empty plan — documented design choice;
+- read-back `count != 0` → `remote_mission_state_uncertain` with
+  `observed_count`, and the refusing ack's result name is carried in the
+  message for diagnosis;
+- no ack at all (timeout, resend budget exhausted) → `uncertain` as before.
 
 `[FACT]` ArduPilot handles `MISSION_CLEAR_ALL` via
 `GCS_MAVLINK::handle_mission_clear_all` → protocol `handle_mission_clear_all`,
