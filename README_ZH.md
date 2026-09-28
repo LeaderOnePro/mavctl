@@ -78,7 +78,9 @@ source system 254，可通过 `mavctl daemon start --source-system <1..255>`
 配置），不与其验证过的 GCS（MAVProxy 1.8.74，默认 255/230）共享线上身份；
 传输另外对重复的 relay 流量做了收敛。mission 支持仅限 ArduPilot SITL
 验证——不声明真实飞机验证。目前没有 mission start/execution 命令：上传
-不会切换载具到 AUTO。
+不会切换载具到 AUTO。SITL conformance 运行于本地修改过的 ArduPilot
+checkout（revision `4c98c9221a`；唯一经审阅的源码修改是 `AP_FWVersion.h`
+中的 macOS host-build/linker workaround，不影响 mission/GCS 运行时代码）。
 
 未实现——仅描述当前范围，不是路线图承诺：
 

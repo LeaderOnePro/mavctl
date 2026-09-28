@@ -177,3 +177,31 @@ uvx mavctl --help
 Then connect the installed tool to SITL once
 (`mavctl daemon start --connect udp:127.0.0.1:14550`) to confirm the wheel
 ships a working entrypoint.
+
+## Release state before v0.3.0
+
+The `release/0.3.0` branch prepares the mavctl **0.3.0** release; as of this
+branch:
+
+- production PyPI publication has **not** happened yet — production PyPI
+  latest remains **0.2.1**;
+- the formal tag `v0.3.0` has **not** been created (local or remote);
+- Phase 3A Mission Protocol Core is the main feature of this release:
+  `mavctl mission upload / download / clear` (ArduPilot-first Mission JSON
+  v1, lossless-or-fail download, fresh-ground guards, clear read-back
+  verification, ArduPilot home-slot wire compatibility, relay-residue
+  settle quarantine). Mission execution / start / AUTO are intentionally
+  **not** included (Phase 3B);
+- release validation includes the mock suite (443 tests, ruff, mypy strict,
+  build, twine) and ArduPilot SITL conformance:
+  `upload → lossless download → clear → empty read-back`, full suite twice
+  consecutively, on both the shared MAVProxy loopback topology and the
+  isolated no-MAVProxy instance;
+- SITL provenance: validated against a locally modified ArduPilot checkout
+  at revision `4c98c9221a`; the only reviewed source modification was a
+  macOS host-build/linker workaround in `AP_FWVersion.h` that does not
+  alter mission/GCS runtime code;
+- after this PR merges, publishing follows the standard flow: confirm main
+  has `version = "0.3.0"`, push the annotated tag `v0.3.0`, let the GitHub
+  OIDC publish workflow release to PyPI, then verify a clean-environment
+  installation.

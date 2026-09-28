@@ -12,9 +12,11 @@ to be driven by agents. A resident daemon owns the vehicle link; every
 ## Supported commands (complete list)
 
 `status`, `telemetry`, `arm`, `disarm`, `mode`, `takeoff`, `land`, `rtl`,
-`daemon start|stop|status`. Nothing else exists — do not guess or simulate
-commands for missions, parameter editing, geofences, etc. They are not
-implemented yet.
+`daemon start|stop|status`,
+`mission upload|download|clear` (ArduPilot SITL validated; upload/clear need
+`--confirm`; there is **no** mission start/execution command). Nothing else
+exists — do not guess or simulate commands for mission execution, parameter
+editing, geofences, etc. They are not implemented yet.
 
 Common flags: `--json` everywhere; `--confirm` required on all state-changing
 commands; `--dry-run` previews guard decisions; `--wait --timeout <s>`
