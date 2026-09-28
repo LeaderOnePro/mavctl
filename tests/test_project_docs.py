@@ -145,12 +145,21 @@ def test_readme_states_pypi_install_availability() -> None:
 
 
 def test_only_the_released_version_is_claimed_published() -> None:
-    # Both production releases may be claimed as published; no future
-    # version (0.2.2 / 0.3.0 / …) may ever appear as a published claim.
+    # Production releases may be claimed as published: 0.2.0, 0.2.1 and
+    # 0.3.0. No future version (0.3.1 / 0.4.0 / …) may ever appear as a
+    # published claim.
     corpus = f"{_README}\n{_ZH_README}\n{_PUBLISHING}"
     claimed = set(_VERSIONED_PUBLISHED_CLAIM.findall(corpus))
     claimed |= set(_CHINESE_VERSIONED_PUBLISHED_CLAIM.findall(corpus))
-    assert claimed == {"0.2.0", "0.2.1"}, claimed
+    assert claimed <= {"0.2.0", "0.2.1", "0.3.0"}, claimed
+    for future in ("0.3.1", "0.4.0"):
+        assert not re.search(
+            rf"\bmavctl\s+{re.escape(future)}\s+(?:is|has\s+been)\s+published",
+            corpus, re.IGNORECASE,
+        ), future
+        assert not re.search(
+            rf"\bmavctl\s+{re.escape(future)}\s+已(?:经)?发布", corpus
+        ), future
 
 
 # -- Chinese README (README_ZH.md) -------------------------------------------
@@ -302,17 +311,44 @@ def test_release_branch_prepares_exact_version_030() -> None:
     assert "0.2.2.dev0" not in _PYPROJECT
 
 
-def test_publishing_doc_records_release_state_before_030() -> None:
-    # The release-state section must state exactly what has and has not
-    # happened before the release: branch prepares 0.3.0, no PyPI
-    # publication yet, no formal v0.3.0 tag yet, Phase 3A is the feature.
-    assert "## Release state before v0.3.0" in _PUBLISHING
+def test_publishing_doc_records_030_production_release() -> None:
+    # The 0.3.0 production record must capture the release facts: date,
+    # OIDC method, artifacts, GitHub Release, verification steps, feature
+    # scope, validation, provenance, and the next-dev-version guidance.
     normalized = " ".join(_PUBLISHING.split())
-    assert "production PyPI publication has **not** happened yet" in normalized
-    assert "`v0.3.0` has **not** been created" in normalized
-    assert "Phase 3A Mission Protocol Core is the main feature" in normalized
-    assert "4c98c9221a" in _PUBLISHING  # SITL provenance revision
+    assert "## Production release record: 0.3.0" in _PUBLISHING
+    assert "Released: 2026-09-28" in normalized
+    assert "Version: 0.3.0" in normalized
+    assert "GitHub Actions OIDC Trusted Publishing" in normalized
+    assert "wheel and sdist" in normalized
+    assert "GitHub Release: v0.3.0" in normalized
+    for verification in (
+        "production PyPI JSON metadata", "clean virtual-environment installation",
+        "`mavctl --version`", "`mavctl --help`", "`mavctl mission --help`",
+        "`mavctl daemon --help`",
+    ):
+        assert verification in normalized, verification
+    assert "`mavctl mission upload`" in normalized
+    assert "`mavctl mission download`" in normalized
+    assert "`mavctl mission clear`" in normalized
+    assert "out of scope" in normalized  # mission execution / AUTO / start
+    assert "upload → download → clear → empty read-back" in normalized
+    assert "shared MAVProxy loopback" in normalized
+    assert "isolated no-MAVProxy loopback" in normalized
+    assert "4c98c9221a" in _PUBLISHING
     assert "AP_FWVersion.h" in _PUBLISHING
+    assert "no real-aircraft validation or support claim" in normalized
+
+
+def test_publishing_doc_gives_next_dev_version_guidance() -> None:
+    # The next development version must move forward from 0.3.0; existing
+    # version numbers are never re-published.
+    normalized = " ".join(_PUBLISHING.split())
+    assert "0.3.1.dev0" in normalized
+    assert "0.4.0.dev0" in normalized
+    assert "Never re-publish an existing version number" in normalized
+    # no token material in the release record or guidance
+    assert not re.search(r"(?i)\b(pypi[_-]?api[_-]?token|gh[_-]?token|password)\b", normalized)
 
 
 def test_readme_mission_surface_lists_exactly_the_implemented_commands() -> None:
