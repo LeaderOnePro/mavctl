@@ -24,13 +24,19 @@ _DOC_FILES = (
 
 # Top-level commands the current CLI actually implements (mavctl --help).
 _SUPPORTED_COMMANDS = frozenset(
-    {"status", "telemetry", "arm", "disarm", "mode", "takeoff", "land", "rtl", "daemon"}
+    {"status", "telemetry", "arm", "disarm", "mode", "takeoff", "land", "rtl",
+     "daemon", "mission"}
 )
 
 # Unimplemented dangerous capabilities: free to *name* in plain prose ("not
-# implemented"); forbidden as runnable text inside code segments.
+# implemented"); forbidden as runnable text inside code segments. Mission
+# upload/download/clear are implemented since Phase 3A (mission start /
+# execution is still Phase 3B future work).
 _UNSUPPORTED_DANGEROUS = re.compile(
-    r"mavctl\s+(mission|geofence|fence|rally|params?)\b", re.IGNORECASE
+    r"mavctl\s+(geofence|fence|rally|params?)\b", re.IGNORECASE
+)
+_UNSUPPORTED_MISSION_EXECUTION = re.compile(
+    r"mavctl\s+mission\s+(start|pause|resume|stop|set-current)\b", re.IGNORECASE
 )
 _MAVCTL_INVOCATION = re.compile(r"mavctl\s+([A-Za-z][A-Za-z0-9_-]*)")
 
@@ -169,8 +175,8 @@ def test_force_arm_is_never_an_invocation() -> None:
 
 def test_plain_prose_may_name_unimplemented_capabilities() -> None:
     prose = (
-        "Mission upload is future work: the mavctl mission, mavctl fence and "
-        "mavctl param commands are not implemented yet."
+        "Mission execution is future work: the mavctl fence and mavctl param "
+        "commands are not implemented yet."
     )
     assert _find_in_code(_UNSUPPORTED_DANGEROUS, prose) == []
 
@@ -181,13 +187,23 @@ def test_plain_prose_may_warn_against_force_arm() -> None:
 
 
 def test_runnable_forms_are_rejected_in_code_segments() -> None:
-    fenced = "```bash\nmavctl mission upload x\nmavctl arm --confirm --force\n```\n"
-    assert _find_in_code(_UNSUPPORTED_DANGEROUS, fenced) == ["mavctl mission"]
+    fenced = "```bash\nmavctl arm --confirm --force\n```\n"
     assert _find_in_code(_FORCE_ARM_INVOCATION, fenced) == [
         "mavctl arm --confirm --force"
     ]
     inline = "run `mavctl params set ARMING_CHECK 0`\n"
     assert _find_in_code(_UNSUPPORTED_DANGEROUS, inline) == ["mavctl params"]
+
+
+def test_mission_execution_is_never_a_runnable_command() -> None:
+    # Phase 3B future work: mission upload/download/clear exist, but start /
+    # pause / resume / stop / set-current must not appear as runnable text.
+    fenced = "```bash\nmavctl mission start --confirm\nmavctl mission set-current 2\n```\n"
+    hits = _find_in_code(_UNSUPPORTED_MISSION_EXECUTION, fenced)
+    assert hits == ["mavctl mission start", "mavctl mission set-current"]
+    # the implemented surface stays allowed
+    allowed = "```bash\nmavctl mission upload m.json --confirm\n```\n"
+    assert _find_in_code(_UNSUPPORTED_MISSION_EXECUTION, allowed) == []
 
 
 # -- safety semantics -------------------------------------------------------

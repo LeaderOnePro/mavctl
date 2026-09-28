@@ -7,12 +7,29 @@ import contextlib
 import math
 import signal
 from collections.abc import Awaitable, Callable
-from typing import Any
+from typing import Any, ParamSpec, TypeVar
 
-from mavctl.adapter.base import AdapterError, ModeMappingUnavailableError, VehicleAdapter
+from pydantic import ValidationError
+
+from mavctl.adapter.base import (
+    AdapterError,
+    MissionCountUnsupportedError,
+    MissionItemUnsupportedError,
+    MissionProtocolError,
+    MissionStateUncertainError,
+    ModeMappingUnavailableError,
+    VehicleAdapter,
+)
 from mavctl.daemon import guards, wire
 from mavctl.daemon.guards import GuardConfig, GuardDecision
-from mavctl.models import CommandOutcome, DaemonResponse, ExitCode, RpcRequest, WaitStatus
+from mavctl.models import (
+    CommandOutcome,
+    DaemonResponse,
+    ExitCode,
+    MissionV1,
+    RpcRequest,
+    WaitStatus,
+)
 from mavctl.paths import runtime_dir, socket_path
 
 # Max bytes accepted for a single request frame (defensive bound).
@@ -28,6 +45,9 @@ _TAKEOFF_REACHED_FRACTION = 0.95
 _WAIT_POLL_INTERVAL = 0.25
 
 Handler = Callable[[RpcRequest], Awaitable[DaemonResponse]]
+
+_P = ParamSpec("_P")
+_T = TypeVar("_T")
 
 
 class DaemonServer:
@@ -60,6 +80,9 @@ class DaemonServer:
             "status": self._m_status,
             "telemetry": self._m_telemetry,
             "shutdown": self._m_shutdown,
+            "mission_upload": self._m_mission_upload,
+            "mission_download": self._m_mission_download,
+            "mission_clear": self._m_mission_clear,
             "arm": self._m_arm,
             "disarm": self._m_disarm,
             "mode": self._m_mode,
@@ -143,6 +166,148 @@ class DaemonServer:
     async def _m_shutdown(self, _request: RpcRequest) -> DaemonResponse:
         self.request_stop()
         return DaemonResponse.success({"stopping": True})
+
+    # -- mission RPC methods (Phase 3A) ------------------------------------
+
+    def _parse_mission(self, raw: Any) -> MissionV1 | None:
+        """Authoritative daemon-side schema validation."""
+
+        try:
+            return MissionV1.model_validate(raw)
+        except ValidationError:
+            return None
+
+    def _mission_uncertain(self, exc: MissionStateUncertainError, action: str) -> DaemonResponse:
+        detail: dict[str, Any] = {
+            "reason": "remote_mission_state_uncertain",
+            "hint": "verify the remote mission with 'mavctl mission download'",
+        }
+        if exc.sent_upto is not None:
+            detail["sent_upto"] = exc.sent_upto
+        if exc.observed_count is not None:
+            detail["observed_count"] = exc.observed_count
+        expected_seq = getattr(exc, "expected_seq", None)
+        requested_seq = getattr(exc, "requested_seq", None)
+        if expected_seq is not None:
+            detail["expected_seq"] = expected_seq
+        if requested_seq is not None:
+            detail["requested_seq"] = requested_seq
+        if action == "mission_clear" and exc.observed_count is not None:
+            message = (
+                f"mission_clear uncertain; "
+                f"remote mission count observed: {exc.observed_count}"
+            )
+        elif action == "mission_clear":
+            message = (
+                "mission_clear outcome uncertain; "
+                "remote mission count could not be observed"
+            )
+        else:
+            message = f"{action} outcome uncertain; remote mission state must be verified"
+        return DaemonResponse.failure(ExitCode.NACK_TIMEOUT, message, detail)
+
+    def _mission_rejected(self, exc: MissionProtocolError) -> DaemonResponse:
+        return DaemonResponse.failure(
+            ExitCode.NACK_TIMEOUT,
+            f"mission operation failed: {exc.result_name}",
+            {"reason": "mission_rejected", "result_name": exc.result_name},
+        )
+
+    async def _m_mission_upload(self, request: RpcRequest) -> DaemonResponse:
+        p = request.params
+        mission = self._parse_mission(p.get("mission"))
+        if mission is None:
+            return DaemonResponse.failure(
+                ExitCode.USAGE_ERROR,
+                "invalid mission: the payload does not match the v1 mission schema",
+                {
+                    "reason": "invalid_mission",
+                    "hint": "validate the mission JSON against the mavctl v1 schema",
+                },
+            )
+        async with self._command_lock:
+            state = self._adapter.get_state()
+            if not state.connected:
+                return self._not_connected()
+            decision = guards.check_mission_upload(
+                state, mission, confirm=_flag(p, "confirm"), config=self._guard_config
+            )
+            pre = self._pre_execute(decision, dry_run=_flag(p, "dry_run"))
+            if pre is not None:
+                return pre
+            try:
+                outcome = await self._blocking_mission(self._adapter.upload_mission, mission)
+            except MissionStateUncertainError as exc:
+                return self._mission_uncertain(exc, "mission_upload")
+            except MissionProtocolError as exc:
+                return self._mission_rejected(exc)
+        return DaemonResponse.success(outcome.model_dump())
+
+    async def _m_mission_download(self, request: RpcRequest) -> DaemonResponse:
+        # Read-only: daemon _command_lock deliberately not taken, so a
+        # download may run beside a long --wait (design §H).
+        state = self._adapter.get_state()
+        if not state.connected:
+            return self._not_connected()
+        try:
+            mission = await self._blocking_mission(self._adapter.download_mission)
+        except MissionItemUnsupportedError as exc:
+            return DaemonResponse.failure(
+                ExitCode.NACK_TIMEOUT,
+                "remote mission contains items outside the mavctl v1 schema",
+                {
+                    "reason": "mission_item_unsupported",
+                    "seq": exc.seq,
+                    "command": exc.command,
+                    "frame": exc.frame,
+                    "hint": "inspect the mission with a full GCS; mavctl v1 cannot represent it",
+                },
+            )
+        except MissionCountUnsupportedError as exc:
+            # observed_count is the wire count, which on ArduPilot includes the
+            # vehicle-managed home slot (seq 0); v1 items = wire count - 1.
+            v1_items = max(exc.observed_count - 1, 0)
+            return DaemonResponse.failure(
+                ExitCode.NACK_TIMEOUT,
+                f"remote mission has {v1_items} items; mavctl v1 "
+                f"supports at most {exc.max_supported_items}",
+                {
+                    "reason": "mission_item_unsupported",
+                    "observed_count": v1_items,
+                    "max_supported_items": exc.max_supported_items,
+                },
+            )
+        except MissionStateUncertainError as exc:
+            return self._mission_uncertain(exc, "mission_download")
+        except MissionProtocolError as exc:
+            return DaemonResponse.failure(
+                ExitCode.NACK_TIMEOUT,
+                f"mission download failed: {exc.result_name}",
+                {"reason": "mission_protocol_timeout", "result_name": exc.result_name},
+            )
+        return DaemonResponse.success(
+            {"action": "mission_download", "mission": mission.model_dump()}
+        )
+
+    async def _m_mission_clear(self, request: RpcRequest) -> DaemonResponse:
+        p = request.params
+        async with self._command_lock:
+            state = self._adapter.get_state()
+            if not state.connected:
+                return self._not_connected()
+            decision = guards.check_mission_clear(
+                state, confirm=_flag(p, "confirm"), config=self._guard_config
+            )
+            pre = self._pre_execute(decision, dry_run=_flag(p, "dry_run"))
+            if pre is not None:
+                return pre
+            try:
+                outcome = await self._blocking_mission(self._adapter.clear_mission)
+            except MissionStateUncertainError as exc:
+                return self._mission_uncertain(exc, "mission_clear")
+            except MissionProtocolError as exc:
+                return self._mission_rejected(exc)
+        return DaemonResponse.success(outcome.model_dump())
 
     # -- command RPC methods ----------------------------------------------
     #
@@ -385,13 +550,22 @@ class DaemonServer:
         loop = asyncio.get_running_loop()
         try:
             return await loop.run_in_executor(None, fn, *args)
-        except ModeMappingUnavailableError:
-            # A transient vehicle state that the mode command maps to a
-            # structured, retryable rejection — not an ADAPTER_ERROR outcome
-            # and never an internal error.
+        except (MissionProtocolError, ModeMappingUnavailableError):
+            # Typed vehicle/protocol states that mission and mode commands map
+            # to structured responses — never ADAPTER_ERROR outcomes and
+            # never internal errors.
             raise
         except AdapterError as exc:
             return CommandOutcome(accepted=False, result_name=f"ADAPTER_ERROR: {exc}")
+
+    async def _blocking_mission(
+        self, fn: Callable[_P, _T], *args: _P.args, **kwargs: _P.kwargs
+    ) -> _T:
+        """Run a mission transaction in the executor; typed mission errors
+        propagate to the RPC handler for structured mapping."""
+
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, fn, *args)
 
     def _command_result(
         self,

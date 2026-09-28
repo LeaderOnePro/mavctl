@@ -21,13 +21,14 @@ _WORKFLOW = (_ROOT / ".github" / "workflows" / "publish.yml").read_text(encoding
 _SKILLS_ACCEPTANCE = (_ROOT / "docs" / "SKILLS_CLI_ACCEPTANCE.md").read_text(encoding="utf-8")
 
 _SUPPORTED_COMMANDS = frozenset(
-    {"status", "telemetry", "arm", "disarm", "mode", "takeoff", "land", "rtl", "daemon"}
+    {"status", "telemetry", "arm", "disarm", "mode", "takeoff", "land", "rtl",
+     "daemon", "mission"}
 )
 
 _MAVCTL_INVOCATION = re.compile(r"mavctl\s+([A-Za-z][A-Za-z0-9_-]*)")
 # Unimplemented capabilities may be *named* as bare words, never invoked.
 _UNSUPPORTED_INVOCATION = re.compile(
-    r"mavctl\s+(mission|geofence|fence|rally|params?)\b", re.IGNORECASE
+    r"mavctl\s+(geofence|fence|rally|params?)\b", re.IGNORECASE
 )
 _FORCE_ARM_INVOCATION = re.compile(r"mavctl\s+arm\b[^\n]*--force", re.IGNORECASE)
 
@@ -102,6 +103,16 @@ def test_readme_never_invokes_unimplemented_capabilities() -> None:
 def test_readme_never_shows_a_force_arm_invocation() -> None:
     match = _FORCE_ARM_INVOCATION.search(_README)
     assert match is None, f"README: {match.group(0)!r}"
+
+
+def test_readme_states_mission_surface_is_sitl_validated_not_flight_proven() -> None:
+    # Honesty gate (updated after the Phase 3A SITL acceptance): the READMEs
+    # must state that the mission transfer is ArduPilot SITL validated only
+    # (no real-aircraft claim) and that there is no mission execution command.
+    for readme in (_README, _ZH_README):
+        assert "mission upload" in readme
+        assert "SITL validated" in readme or "SITL 验证" in readme
+        assert "real-aircraft" in readme or "真实飞机" in readme
 
 
 def test_readme_quickstart_covers_the_safe_workflow() -> None:

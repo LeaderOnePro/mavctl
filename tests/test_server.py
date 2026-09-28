@@ -12,8 +12,11 @@ from mavctl.daemon import wire
 from mavctl.daemon.server import DaemonServer
 from mavctl.models import (
     CommandOutcome,
+    DownloadedMissionV1,
     ExitCode,
     GpsInfo,
+    MissionOutcome,
+    MissionV1,
     Position,
     Telemetry,
     VehicleState,
@@ -82,6 +85,20 @@ class FakeAdapter:
         self.calls.append("rtl")
         self._state = self._state.model_copy(update={"armed": False})
         return self._outcome
+
+    def upload_mission(self, mission: MissionV1) -> MissionOutcome:
+        self.calls.append("upload_mission")
+        return MissionOutcome(action="mission_upload", accepted=True, item_count=len(mission.items))
+
+    def download_mission(self) -> DownloadedMissionV1:
+        self.calls.append("download_mission")
+        return DownloadedMissionV1(version=1, items=[])
+
+    def clear_mission(self) -> MissionOutcome:
+        self.calls.append("clear_mission")
+        return MissionOutcome(
+            action="mission_clear", accepted=True, verified=True, observed_count=0
+        )
 
 
 def _state(connected: bool = True, *, armed: bool = False, mode: str = "GUIDED") -> VehicleState:

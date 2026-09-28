@@ -58,6 +58,9 @@ mavctl mode <MODE>
 mavctl takeoff --alt <metres>
 mavctl land
 mavctl rtl
+mavctl mission upload <mission.json> --confirm [--dry-run]
+mavctl mission download [--output <mission.json>] [--json]
+mavctl mission clear --confirm [--dry-run]
 ```
 
 Cross-cutting behaviour:
@@ -71,10 +74,23 @@ Cross-cutting behaviour:
 | idempotent repeats | re-applying an achieved change succeeds ("already armed") |
 | transaction safety | ACK/NACK handling, serialized commands, link-loss abort |
 
+Mission upload/download/clear are validated against ArduPilot SITL
+(lossless upload → download round-trip, including takeoff items): the
+automated suite runs on a dedicated MAVProxy-free loopback instance, and the
+shared sim_vehicle + MAVProxy relay topology was validated with the same
+suite plus a manual CLI acceptance. mavctl uses its own GCS identity
+(default source system 254, configurable via
+`mavctl daemon start --source-system <1..255>`) so it never shares an
+on-wire identity with the GCS it was validated against (MAVProxy 1.8.74,
+default 255/230); transfers additionally converge on duplicated relay
+traffic. Mission support is ArduPilot SITL validated only — no
+real-aircraft claim. There is no mission start/execution command yet:
+uploading does not switch the vehicle to AUTO.
+
 Not implemented — current scope only, not a roadmap promise:
 
 ```text
-Mission upload/download/start
+Mission execution (start/pause/resume/stop/set-current)
 Parameters
 Geofence
 Log download / analysis

@@ -15,17 +15,28 @@ from mavctl.adapter import create_adapter
 from mavctl.daemon import process
 from mavctl.daemon.guards import GuardConfig
 from mavctl.daemon.server import DaemonServer
+from mavctl.models import DEFAULT_GCS_SOURCE_SYSTEM, validate_source_system
 
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(prog="mavctl.daemon", add_help=True)
     parser.add_argument("--connect", required=True, help="mavutil connection string")
     parser.add_argument("--heartbeat-timeout", type=float, default=3.0)
+    parser.add_argument(
+        "--source-system",
+        type=int,
+        default=DEFAULT_GCS_SOURCE_SYSTEM,
+        help="MAVLink source system id for this GCS (1-255)",
+    )
     args = parser.parse_args(argv)
     if not (math.isfinite(args.heartbeat_timeout) and args.heartbeat_timeout > 0):
         parser.error(
             f"--heartbeat-timeout must be finite and > 0 (got {args.heartbeat_timeout!r})"
         )
+    try:
+        validate_source_system(args.source_system)
+    except ValueError as exc:
+        parser.error(str(exc))
     return args
 
 
@@ -35,6 +46,7 @@ def main(argv: list[str] | None = None) -> int:
     adapter = create_adapter(
         connection_string=args.connect,
         heartbeat_timeout_s=args.heartbeat_timeout,
+        source_system=args.source_system,
     )
     # Single source of truth: the same --heartbeat-timeout value drives the
     # adapter's ``connected`` computation AND the guards' heartbeat-freshness

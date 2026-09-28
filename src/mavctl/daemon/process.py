@@ -68,7 +68,12 @@ def is_running() -> bool:
     return True
 
 
-def spawn(connection_string: str, heartbeat_timeout: float, startup_timeout: float = 12.0) -> int:
+def spawn(
+    connection_string: str,
+    heartbeat_timeout: float,
+    source_system: int,
+    startup_timeout: float = 12.0,
+) -> int:
     """Launch a detached daemon process and wait until it answers a ping.
 
     Returns:
@@ -90,6 +95,8 @@ def spawn(connection_string: str, heartbeat_timeout: float, startup_timeout: flo
                 connection_string,
                 "--heartbeat-timeout",
                 str(heartbeat_timeout),
+                "--source-system",
+                str(source_system),
             ],
             stdin=subprocess.DEVNULL,
             stdout=log,

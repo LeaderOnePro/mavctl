@@ -18,7 +18,7 @@ import math
 
 from pydantic import BaseModel, field_validator
 
-from mavctl.models import ExitCode, VehicleState
+from mavctl.models import ExitCode, MissionV1, VehicleState
 
 # Defaults for precondition thresholds.
 DEFAULT_MAX_TAKEOFF_ALT_M = 120.0
@@ -102,6 +102,33 @@ def _passed(name: str, detail: str) -> GuardCheck:
 
 def _age_text(age_s: float | None) -> str:
     return "never" if age_s is None else f"{age_s:.1f}s"
+
+
+def _classify_ground_state(state: VehicleState, config: GuardConfig) -> str:
+    """Classify cached ground/air evidence: ``airborne``, ``grounded``,
+    ``stale`` (surface ground evidence exists but is stale/undated), or
+    ``unknown`` (no ground signal at all).
+
+    Shared by ordinary disarm and the mission upload/clear guards so the
+    freshness discipline can never diverge between them.
+    """
+
+    if state.landed_state == "in_air" or (
+        state.relative_alt_m is not None
+        and state.relative_alt_m > config.airborne_alt_threshold_m
+    ):
+        return "airborne"
+    landed_reported = state.landed_state == "on_ground"
+    landed_fresh = _is_fresh_age(state.landed_state_age_s, config.max_ground_evidence_age_s)
+    low_known_alt = state.relative_alt_m is not None and (
+        state.relative_alt_m <= config.max_on_ground_alt_m
+    )
+    telemetry_fresh = _is_fresh_age(state.telemetry_age_s, config.max_ground_evidence_age_s)
+    if (landed_reported and landed_fresh) or (low_known_alt and telemetry_fresh):
+        return "grounded"
+    if landed_reported or low_known_alt:
+        return "stale"
+    return "unknown"
 
 
 def _is_fresh_age(age_s: float | None, limit_s: float) -> bool:
@@ -274,11 +301,7 @@ def check_disarm(
     # on-ground so contradictory telemetry rejects safely. Staleness never
     # downgrades a refusal — stale air evidence still rejects, because
     # refusing is the safe direction.
-    airborne = state.landed_state == "in_air" or (
-        state.relative_alt_m is not None
-        and state.relative_alt_m > config.airborne_alt_threshold_m
-    )
-    if airborne:
+    if _classify_ground_state(state, config) == "airborne":
         return _reject(
             action=action,
             reason="in_flight",
@@ -293,20 +316,12 @@ def check_disarm(
         )
 
     # Positive ground evidence, freshness-gated (Phase 2.1): stale cached
-    # "ground" is not current ground. A landed_state report counts only while
-    # its age is known and within ``max_ground_evidence_age_s``; a low known
-    # relative altitude only while telemetry itself is that fresh. Anomalous
-    # ages (negative/NaN/Infinity/None) are never fresh.
+    # "ground" is not current ground. Anomalous ages are never fresh.
     rel_alt = state.relative_alt_m
-    landed_reported = state.landed_state == "on_ground"
-    landed_fresh = _is_fresh_age(state.landed_state_age_s, config.max_ground_evidence_age_s)
-    low_known_alt = rel_alt is not None and rel_alt <= config.max_on_ground_alt_m
-    telemetry_fresh = _is_fresh_age(state.telemetry_age_s, config.max_ground_evidence_age_s)
-    on_ground = landed_reported and landed_fresh
-    alt_ground = low_known_alt and telemetry_fresh
+    ground_state = _classify_ground_state(state, config)
 
-    if not (on_ground or alt_ground):
-        if landed_reported or low_known_alt:
+    if ground_state != "grounded":
+        if ground_state == "stale":
             # Surface ground evidence exists but is stale or undated: cached
             # data must not be read as *current* ground contact.
             return _reject(
@@ -370,6 +385,161 @@ def check_disarm(
             f"telemetry_age={_age_text(state.telemetry_age_s)}",
         )
     )
+    return GuardDecision(allowed=True, action=action, checks=checks)
+
+
+def _reject_unless_grounded(
+    action: str, state: VehicleState, config: GuardConfig, checks: list[GuardCheck]
+) -> GuardDecision | None:
+    """Shared mission-path ground/air evidence gate.
+
+    Airborne evidence (fresh or stale) rejects as ``in_flight``; stale or
+    undated surface ground evidence rejects as ``ground_state_stale``; no
+    ground signal rejects as ``ground_state_unknown``. Fresh positive ground
+    evidence returns None (allowed to proceed).
+    """
+
+    kind = _classify_ground_state(state, config)
+    if kind == "grounded":
+        return None
+    if kind == "airborne":
+        return _reject(
+            action=action,
+            reason="in_flight",
+            message=f"refusing to {action}: vehicle appears to be airborne",
+            hint="land first (mavctl land --confirm); missions are never modified in flight",
+            checks=checks,
+            failed_check=GuardCheck(
+                name="on_ground",
+                passed=False,
+                detail=f"landed_state={state.landed_state} rel_alt={state.relative_alt_m}",
+            ),
+        )
+    if kind == "stale":
+        return _reject(
+            action=action,
+            reason="ground_state_stale",
+            message=(
+                f"refusing to {action}: cached ground evidence is stale; "
+                "only current ground contact qualifies"
+            ),
+            hint=(
+                "wait for fresh telemetry, then re-check (mavctl status); "
+                "land first (mavctl land --confirm) if in doubt"
+            ),
+            checks=checks,
+            failed_check=GuardCheck(
+                name="ground_fresh",
+                passed=False,
+                detail=(
+                    f"landed_state={state.landed_state} "
+                    f"age={_age_text(state.landed_state_age_s)} "
+                    f"rel_alt={state.relative_alt_m} "
+                    f"age={_age_text(state.telemetry_age_s)} "
+                    f"max_ground_evidence_age_s={config.max_ground_evidence_age_s}"
+                ),
+            ),
+        )
+    return _reject(
+        action=action,
+        reason="ground_state_unknown",
+        message=(
+            f"refusing to {action}: vehicle is armed but it cannot be safely "
+            "determined whether it is on the ground"
+        ),
+        hint=(
+            "check landed_state / relative_alt first (mavctl status or "
+            "mavctl telemetry); land first (mavctl land --confirm) if in doubt"
+        ),
+        checks=checks,
+        failed_check=GuardCheck(
+            name="ground_known",
+            passed=False,
+            detail=f"landed_state={state.landed_state} rel_alt={state.relative_alt_m}",
+        ),
+    )
+
+
+def check_mission_upload(
+    state: VehicleState, mission: MissionV1, *, confirm: bool, config: GuardConfig
+) -> GuardDecision:
+    """Guard ``mission upload``: confirm → fresh link → disarmed → grounded →
+    per-item altitude ceiling (reuses the single takeoff altitude limit)."""
+
+    action = "mission_upload"
+    terminal, checks = _preamble(action, state, confirm, config)
+    if terminal is not None:
+        return terminal
+    if state.armed is not False:
+        return _reject(
+            action=action,
+            reason="mission_requires_disarmed",
+            message="mission upload requires the vehicle to be disarmed",
+            hint=(
+                "land or RTL first, confirm 'armed': false via mavctl status, "
+                "then retry the upload"
+            ),
+            checks=checks,
+            failed_check=GuardCheck(name="disarmed", passed=False, detail=f"armed={state.armed}"),
+        )
+    grounded = _reject_unless_grounded(action, state, config, checks)
+    if grounded is not None:
+        return grounded
+    for index, item in enumerate(mission.items):
+        altitude = getattr(item, "altitude_m", None)
+        if altitude is not None and altitude > config.max_takeoff_alt_m:
+            return _reject(
+                action=action,
+                reason="altitude_limit",
+                message=(
+                    f"mission item {index} altitude {altitude}m exceeds limit "
+                    f"{config.max_takeoff_alt_m}m"
+                ),
+                hint=(
+                    f"keep every mission item at or below "
+                    f"{config.max_takeoff_alt_m}m, or raise the configured limit"
+                ),
+                checks=checks,
+                failed_check=GuardCheck(
+                    name="alt_limit",
+                    passed=False,
+                    detail=f"item {index}: {altitude} > {config.max_takeoff_alt_m}",
+                ),
+            )
+    checks.append(
+        _passed(
+            "mission_limits",
+            f"{len(mission.items)} items, all altitudes <= {config.max_takeoff_alt_m}m",
+        )
+    )
+    return GuardDecision(allowed=True, action=action, checks=checks)
+
+
+def check_mission_clear(
+    state: VehicleState, *, confirm: bool, config: GuardConfig
+) -> GuardDecision:
+    """Guard ``mission clear``: confirm → fresh link → disarmed → grounded."""
+
+    action = "mission_clear"
+    terminal, checks = _preamble(action, state, confirm, config)
+    if terminal is not None:
+        return terminal
+    if state.armed is not False:
+        return _reject(
+            action=action,
+            reason="mission_requires_disarmed",
+            message="mission clear requires the vehicle to be disarmed",
+            hint=(
+                "land or RTL first, confirm 'armed': false via mavctl status, "
+                "then retry the clear"
+            ),
+            checks=checks,
+            failed_check=GuardCheck(name="disarmed", passed=False, detail=f"armed={state.armed}"),
+        )
+    grounded = _reject_unless_grounded(action, state, config, checks)
+    if grounded is not None:
+        return grounded
+    checks.append(_passed("mission_clear_checks", "vehicle grounded and disarmed"))
     return GuardDecision(allowed=True, action=action, checks=checks)
 
 

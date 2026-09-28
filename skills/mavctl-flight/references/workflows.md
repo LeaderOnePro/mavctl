@@ -153,3 +153,28 @@ Any tool or adapter that exposes a mavutil-compatible endpoint works too
 `mavctl daemon start --connect <string>`. See `references/troubleshooting.md`
 for the macOS virtualenv note (`ModuleNotFoundError: pexpect`) when launching
 SITL tools.
+
+# Mission upload / inspect / clear (Phase 3A)
+
+Upload takes a mission JSON file (v1 schema: takeoff-first, waypoint/land/rtl
+items). Upload and clear never start the vehicle; execution does not exist
+yet (uploading does not switch the vehicle to AUTO). The transfer is
+ArduPilot SITL validated (lossless round-trip including takeoff); no
+real-aircraft claim.
+
+```bash
+# preview first — dry-run runs every guard and sends nothing
+mavctl mission upload mission.json --confirm --dry-run
+
+# upload (requires disarmed + fresh ground evidence)
+mavctl mission upload mission.json --confirm
+
+# read back and verify what the vehicle holds
+mavctl mission download --json
+
+# clear when done (verified by count read-back)
+mavctl mission clear --confirm
+```
+
+If any mission operation returns `remote_mission_state_uncertain` (exit 6),
+see troubleshooting.md — always verify with `mission download` before acting.

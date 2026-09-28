@@ -2,16 +2,24 @@
 
 from __future__ import annotations
 
+import json
 import math
+from pathlib import Path
 from typing import Annotated, Any
 
 import typer
+from pydantic import ValidationError
 
 from mavctl import __version__
 from mavctl.cli.render import emit_success, fail
 from mavctl.daemon import process
 from mavctl.daemon.client import DaemonNotRunningError, call_daemon
-from mavctl.models import ExitCode
+from mavctl.models import (
+    DEFAULT_GCS_SOURCE_SYSTEM,
+    ExitCode,
+    MissionV1,
+    validate_source_system,
+)
 from mavctl.paths import socket_path
 
 app = typer.Typer(
@@ -22,6 +30,11 @@ app = typer.Typer(
 )
 daemon_app = typer.Typer(help="Manage the mavctl daemon process.", no_args_is_help=True)
 app.add_typer(daemon_app, name="daemon")
+mission_app = typer.Typer(
+    help="Mission plan operations: upload, download, clear (no execution).",
+    no_args_is_help=True,
+)
+app.add_typer(mission_app, name="mission")
 
 
 def _version_callback(value: bool) -> None:
@@ -97,6 +110,15 @@ def _check_heartbeat_timeout(timeout: float, *, json_mode: bool) -> None:
         )
 
 
+def _check_source_system(source_system: int, *, json_mode: bool) -> None:
+    """Early CLI-side range check; the daemon entrypoint re-validates."""
+
+    try:
+        validate_source_system(source_system)
+    except ValueError as exc:
+        fail(ExitCode.USAGE_ERROR, f"--source-system: {exc}", json_mode=json_mode)
+
+
 def _call(
     method: str,
     json_mode: bool,
@@ -135,6 +157,14 @@ def daemon_start(
     heartbeat_timeout: Annotated[
         float, typer.Option("--heartbeat-timeout", help="Seconds before link is deemed lost.")
     ] = 3.0,
+    source_system: Annotated[
+        int,
+        typer.Option(
+            "--source-system",
+            help="MAVLink GCS source system id (1-255). Defaults to a distinct "
+            "identity so mavctl coexists with a conventional GCS on 255.",
+        ),
+    ] = DEFAULT_GCS_SOURCE_SYSTEM,
     json_mode: JsonOption = False,
 ) -> None:
     """Start the background daemon and connect to the vehicle."""
@@ -143,6 +173,7 @@ def daemon_start(
     # daemon must never turn an invalid --heartbeat-timeout into an
     # already-running success.
     _check_heartbeat_timeout(heartbeat_timeout, json_mode=json_mode)
+    _check_source_system(source_system, json_mode=json_mode)
 
     if process.is_running():
         pid = process.read_pid()
@@ -154,7 +185,7 @@ def daemon_start(
         return
 
     try:
-        pid = process.spawn(connect, heartbeat_timeout)
+        pid = process.spawn(connect, heartbeat_timeout, source_system)
     except RuntimeError as exc:
         fail(ExitCode.GENERAL_ERROR, str(exc), json_mode=json_mode)
 
@@ -343,6 +374,152 @@ def rtl(
     )
     emit_success(result, json_mode=json_mode, human=_format_command(result))
 
+
+
+# -- mission sub-app (Phase 3A: upload / download / clear only) -------------
+
+
+def _load_mission_file(path: Path, *, json_mode: bool) -> MissionV1:
+    """Read and schema-validate a mission JSON file locally (exit 2 on any
+    failure, before any daemon contact)."""
+
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        fail(ExitCode.USAGE_ERROR, f"cannot read mission file: {exc}", json_mode=json_mode)
+    try:
+        return MissionV1.model_validate_json(raw)
+    except ValidationError as exc:
+        first = exc.errors()[0]
+        location = ".".join(str(part) for part in first.get("loc", ())) or "payload"
+        fail(
+            ExitCode.USAGE_ERROR,
+            f"invalid mission file ({location}: {first.get('msg')})",
+            json_mode=json_mode,
+            detail={"reason": "invalid_mission"},
+        )
+
+
+def _format_mission_items(mission: dict[str, Any]) -> str:
+    """Compact human-readable mission table."""
+
+    lines = [f"version {mission.get('version')} — {len(mission.get('items', []))} item(s)"]
+    for seq, item in enumerate(mission.get("items", [])):
+        kind = item.get("type", "?")
+        if kind in ("waypoint", "land"):
+            lines.append(
+                f"  {seq:>3}  {kind:<8} lat={item.get('lat_deg', 0):.7f}"
+                f"  lon={item.get('lon_deg', 0):.7f}  alt={item.get('altitude_m', 0):.1f} m"
+            )
+        elif kind == "takeoff":
+            lines.append(f"  {seq:>3}  {kind:<8} alt={item.get('altitude_m', 0):.1f} m")
+        else:
+            lines.append(f"  {seq:>3}  {kind}")
+    return "\n".join(lines)
+
+
+def _format_mission_action(result: dict[str, Any]) -> str:
+    """Human rendering for mission upload/clear responses."""
+
+    action = result.get("action", "mission")
+    if result.get("dry_run"):
+        lines = [f"[dry-run] {action}: WOULD EXECUTE"]
+        for check in result.get("checks", []):
+            mark = "PASS" if check.get("passed") else "FAIL"
+            lines.append(f"  [{mark}] {check.get('name')}: {check.get('detail')}")
+        return "\n".join(lines)
+    accepted = result.get("accepted")
+    parts = [f"{action}: {'accepted' if accepted else 'not accepted'}"]
+    if result.get("item_count") is not None:
+        parts.append(f"({result.get('item_count')} items)")
+    if result.get("verified") is True:
+        parts.append("(remote count verified 0)")
+    if result.get("observed_count") is not None:
+        parts.append(f"(remote count observed: {result.get('observed_count')})")
+    return " ".join(parts)
+
+
+@mission_app.command("upload")
+def mission_upload(
+    mission_json: Annotated[Path, typer.Argument(help="Path to a mission JSON file (v1)")],
+    confirm: ConfirmOption = False,
+    dry_run: DryRunOption = False,
+    json_mode: JsonOption = False,
+) -> None:
+    """Upload a mission JSON file to the vehicle (requires --confirm).
+
+    The vehicle must be disarmed on the ground with fresh telemetry. This
+    never starts the mission (execution is a separate, future operation).
+    """
+
+    mission = _load_mission_file(mission_json, json_mode=json_mode)
+    result = _call(
+        "mission_upload",
+        json_mode,
+        {"mission": mission.model_dump(), "confirm": confirm, "dry_run": dry_run},
+        timeout=_COMMAND_BASE_TIMEOUT,
+    )
+    emit_success(result, json_mode=json_mode, human=_format_mission_action(result))
+
+
+@mission_app.command("download")
+def mission_download(
+    output: Annotated[
+        Path | None, typer.Option("--output", help="Write the mission JSON to this file.")
+    ] = None,
+    json_mode: JsonOption = False,
+) -> None:
+    """Download the remote mission as JSON (read-only; no --confirm needed)."""
+
+    if output is not None and json_mode:
+        fail(
+            ExitCode.USAGE_ERROR,
+            "--output and --json are mutually exclusive",
+            json_mode=json_mode,
+        )
+    result = _call("mission_download", json_mode)
+    mission = result.get("mission") or {}
+    if json_mode:
+        # Purity: the mission JSON is the only stdout content.
+        typer.echo(json.dumps(mission, indent=2, sort_keys=True))
+        return
+    if output is not None:
+        try:
+            output.write_text(
+                json.dumps(mission, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+            )
+        except OSError as exc:
+            fail(
+                ExitCode.USAGE_ERROR,
+                f"cannot write mission output to {output}: {exc}",
+                json_mode=json_mode,
+                detail={"reason": "mission_output_unwritable", "path": str(output)},
+            )
+        emit_success(
+            result,
+            json_mode=False,
+            human=f"mission downloaded: {len(mission.get('items', []))} items → {output}",
+        )
+        return
+    emit_success(result, json_mode=False, human=_format_mission_items(mission))
+
+
+@mission_app.command("clear")
+def mission_clear(
+    confirm: ConfirmOption = False,
+    dry_run: DryRunOption = False,
+    json_mode: JsonOption = False,
+) -> None:
+    """Clear the remote mission (requires --confirm; verified by count
+    read-back)."""
+
+    result = _call(
+        "mission_clear",
+        json_mode,
+        {"confirm": confirm, "dry_run": dry_run},
+        timeout=_COMMAND_BASE_TIMEOUT,
+    )
+    emit_success(result, json_mode=json_mode, human=_format_mission_action(result))
 
 
 # -- human formatters ------------------------------------------------------

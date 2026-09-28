@@ -361,6 +361,95 @@ uv run mavctl rtl --confirm --dry-run   # 期望：exit 4 / not_connected
 uv run mavctl daemon stop
 ```
 
+## 8g. Phase 3A mission 协议验收
+
+mission upload / download / clear 已实现并通过 mock 协议测试，并已完成
+SITL conformance 验收（2026-09）。两个环境均已实测通过。标准测试前提
+只是一个普通 SITL + MAVProxy 环境，与既有 flight SITL tests 相同：
+
+```bash
+sim_vehicle.py -v ArduCopter --out udp:127.0.0.1:14550
+uv run pytest -m sitl        # flight + mission 全套，默认 udp:127.0.0.1:14550
+```
+
+**默认环境 — 共享链路（MAVProxy 共存验收，已验证兼容环境）**：
+`tests/test_mission_sitl.py` 与 `tests/test_sitl.py` 共用
+`MAVCTL_SITL_CONNECT`，默认 `udp:127.0.0.1:14550`。shared MAVProxy
+topology 是已验证兼容环境，必须继续覆盖
+upload → download → clear → empty readback。
+
+**可选隔离环境（非普通测试前提）**：专用无带内 GCS 实例仅作为协议隔离
+诊断：
+
+```bash
+sim_vehicle.py -v ArduCopter --instance 1 --no-mavproxy --no-rebuild
+MAVCTL_SITL_CONNECT=tcp:127.0.0.1:5770 uv run pytest tests/test_mission_sitl.py -q
+```
+
+所有 endpoint 必须是 loopback；真实飞机不在测试范围。
+
+**Reproducibility note（ArduPilot provenance）**：Phase 3A mission
+conformance was validated against a locally modified ArduPilot checkout at
+revision `4c98c9221a`. The only reviewed source modification was a macOS
+host-build/linker workaround in `AP_FWVersion.h`; it does not alter
+mission/GCS runtime code.
+
+`[FACT]`（SITL 实测 + 源码证实）：ArduPilot 将 storage slot 0 保留给
+vehicle home——首个追加的 item 会自动先写入 home（`AP_Mission::add_cmd`），
+对 slot 0 的写入被静默忽略（`replace_cmd`），下载永远把 home 暴露为
+seq 0（`get_item`），且 `MISSION_COUNT` 包含 home。mavctl 因此使用
+**wire 序号空间 1..N** 传输 v1 items（seq 0 发送一个惰性占位 waypoint，
+ArduPilot 从不持久化它），下载时验证并排除 home。早期观察到的
+"takeoff 被归一化为 GLOBAL-frame waypoint" 实际上是 home slot；
+同期还发现 v1 首项被 wire item 1 静默覆盖的 P0 数据丢失缺陷——
+两项均已通过 wire 约定修复，TAKEOFF 无损往返已实测。
+
+`[FACT]`（SITL 实测 + 源码证实）：早期记录的 "MAVProxy 竞争上传" 的
+根因是**链路重复**而非 sysid 冲突：默认 sim_vehicle 接线下 MAVProxy
+同时持有两条 `--out 14550` 链路，每个包都被双向复制——`MISSION_COUNT`
+到达两次会把载具上传会话重新初始化，随后每个 item request 成对到达，
+重发的 item 被 `INVALID_SEQUENCE` 拒绝。这是两个相互独立的硬化层，针对
+不同失败模式：
+
+1. **独立 GCS 身份**（防 mission session ownership collision）：默认
+   source system **254** / component **190**（MAVProxy 1.8.74 默认
+   255/230）。`mavctl daemon start --source-system <1..255>` 可覆盖（严格
+   校验）；
+2. **上传收敛**（防 relay duplicated traffic）：250 ms 内的重复 item
+   request 不重发（载具重发间隔 ≥1 s，更快的必为重复投递）、
+   `INVALID_SEQUENCE` 与陈旧 ACCEPTED ACK 容忍后继续——真实丢失仍由载具
+   ≥1 s 的重发请求驱动恢复。重复投递是该验收拓扑（sim_vehicle + MAVProxy
+   双 --out 转发）的传输行为，不是 MAVProxy 缺陷。
+
+**自动化测试与手工验收的边界**：`tests/test_mission_sitl.py` 的默认自动
+endpoint 是共享的 `udp:127.0.0.1:14550`（与 `tests/test_sitl.py` 一致）；
+共享 MAVProxy 拓扑此前另经 CLI 级 upload → download → clear 手工验收
+（兼容性覆盖，记录于本轮验收）。隔离的 `tcp:127.0.0.1:5770` 仅是可选的
+协议隔离诊断环境。
+
+以下为既定验收步骤（全部为非执行类操作：不起飞、不切 AUTO、
+不发送 mission start）：
+
+```bash
+uv run mavctl daemon start --connect udp:127.0.0.1:14550
+# 1. 上传四项任务：TAKEOFF 10m → WAYPOINT A → WAYPOINT B → RTL
+uv run mavctl mission upload mission.json --confirm
+# 2. 下载并核对语义 JSON 等价（含 TAKEOFF 无损往返）
+uv run mavctl mission download --json
+# 3. 清除并读回验证 count == 0
+uv run mavctl mission clear --confirm
+# 4. 重新上传（覆盖路径）
+uv run mavctl mission upload mission.json --confirm
+uv run mavctl daemon stop
+```
+
+超时/不确定路径（`remote_mission_state_uncertain`，exit 6）仅能在受控
+harness 中验证（见 docs/design/mission-protocol-v1.md §I）。
+
+```bash
+uv run mavctl daemon stop
+```
+
 ## 9. 退出码总表
 
 | 退出码 | 含义 |

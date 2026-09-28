@@ -104,6 +104,33 @@ disappears or changes between validation and send (a transient vehicle
 state, never an internal error) — the recovery is the same: re-poll
 `status --json` and retry.
 
+## mission_requires_disarmed (exit 5, mission upload/clear)
+
+Mission upload and clear are only allowed on the ground, disarmed, with fresh
+evidence. Land first (`mavctl land --confirm --wait --timeout 90`), confirm
+`"armed": false` in `status --json`, then retry.
+
+## remote_mission_state_uncertain (exit 6, mission upload/clear)
+
+The operation timed out or was cancelled after the vehicle may have stored a
+partial mission. Never assume it failed cleanly:
+
+- run `mavctl mission download --json` and inspect what the vehicle actually
+  holds;
+- re-run `mission upload` (overwrite) or `mission clear` after reviewing.
+
+## mission_item_unsupported (exit 6, mission download)
+
+The remote mission contains items mavctl v1 cannot represent (unsupported
+command or frame), or download seq 0 could not be verified as the ArduPilot
+home slot: mavctl excludes seq 0 only when it is the canonical home waypoint
+(`MAV_CMD_NAV_WAYPOINT`, GLOBAL frame, default params) whose coordinates and
+altitude match the `HOME_POSITION` received from the vehicle. A mismatch —
+or `HOME_POSITION` not received yet — means the vehicle does not follow the
+ArduPilot mission wire convention or the home stream is missing; retry once
+the link is fully up, otherwise use a full GCS to inspect that mission.
+Nothing was modified.
+
 ## altitude_limit / invalid_altitude (exit 5 / exit 2, takeoff)
 
 - `altitude_limit` (exit 5): target above the configured ceiling (default
