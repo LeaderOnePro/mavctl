@@ -38,6 +38,7 @@ def fast_timeouts(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(mod, "_MISSION_CLEAR_RESENDS", 0)
     monkeypatch.setattr(mod, "_MISSION_COUNT_RESENDS", 0)
     monkeypatch.setattr(mod, "_MISSION_DUPLICATE_REQUEST_DEBOUNCE_S", 0.0)
+    monkeypatch.setattr(mod, "_MISSION_RESIDUE_SETTLE_S", 0.0)
 
 
 def _hb() -> FakeMsg:
@@ -370,6 +371,24 @@ def test_upload_tolerates_premature_accepted_ack(fast_timeouts: None) -> None:
     assert runner.result.accepted is True
 
 
+def test_upload_terminal_error_ack_is_uncertain(fast_timeouts: None) -> None:
+    """Spec C (conservative): after all items were sent, a current-session
+    non-ACCEPTED ack that is not benign duplicate-item INVALID_SEQUENCE (and
+    not the terminal ACCEPTED) leaves the remote mission modified →
+    remote_mission_state_uncertain."""
+    adapter, master = _adapter()
+    runner = _Runner(lambda: adapter.upload_mission(_mission(2)))
+    runner.start()
+    assert _wait_until(lambda: len(_sent(master, "MISSION_COUNT")) >= 1)
+    for seq in range(3):
+        adapter._handle_message(_msg("MISSION_REQUEST_INT", seq=seq, mission_type=0))
+        assert _wait_until(lambda s=seq: s in _item_seqs(master))  # type: ignore[misc]
+    adapter._handle_message(_msg("MISSION_ACK", type=1, mission_type=0))  # ERROR
+    assert runner.join(timeout=10)
+    assert isinstance(runner.error, MissionStateUncertainError)
+    assert runner.error.result_name == "UNCERTAIN"
+
+
 def test_upload_genuinely_premature_accepted_still_times_out_uncertain(
     fast_timeouts: None,
 ) -> None:
@@ -489,19 +508,65 @@ def test_upload_u3_rejected_ack_is_uncertain_after_items(fast_timeouts: None) ->
     assert _item_seqs(master) == [0, 1, 2, 3]
 
 
-def test_upload_u1_ack_rejected_cleanly_before_items(fast_timeouts: None) -> None:
-    """A rejection that arrives before any item was sent is a clean mission
-    rejection: the vehicle stored nothing, so there is nothing uncertain."""
+def test_upload_u1_genuine_rejection_preserved(fast_timeouts: None) -> None:
+    """Post-quarantine, a non-ACCEPTED ack in the U1 window (COUNT sent, no
+    items sent) is the vehicle's synchronous answer to OUR MISSION_COUNT —
+    NO_SPACE / UNSUPPORTED / DENIED per ArduPilot handle_mission_count — and
+    must surface as mission_rejected (exit 6), never be swallowed into a
+    timeout/uncertain."""
+    for ack_type, name in ((4, "NO_SPACE"), (14, "DENIED"), (2, "UNSUPPORTED_FRAME")):
+        adapter, master = _adapter()
 
+        def run_upload(a: PymavlinkAdapter = adapter) -> object:
+            return a.upload_mission(_mission(4))
+
+        runner = _Runner(run_upload)
+        runner.start()
+        assert _wait_until(lambda m=master: len(_sent(m, "MISSION_COUNT")) >= 1)  # type: ignore[misc]
+        adapter._handle_message(_msg("MISSION_ACK", type=ack_type, mission_type=0))
+        assert runner.join(timeout=10)
+        assert isinstance(runner.error, MissionProtocolError)
+        assert not isinstance(runner.error, MissionStateUncertainError)
+        assert runner.error.result_name == name
+        assert _item_seqs(master) == []
+
+
+def test_upload_residue_from_previous_transaction_is_quarantined(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Transaction A completes; its relay-duplicated post-completion ERROR
+    acks are still in flight. Transaction B starts immediately: B's session
+    settle window (inactive, reader drops everything) must absorb the residue
+    — B proceeds normally and is NOT falsely rejected by A's residue."""
+    import mavctl.adapter.pymavlink_adapter as mod
+
+    monkeypatch.setattr(mod, "_MISSION_RESIDUE_SETTLE_S", 0.05)
     adapter, master = _adapter()
-    runner = _Runner(lambda: adapter.upload_mission(_mission(4)))
-    runner.start()
-    assert _wait_until(lambda: len(_sent(master, "MISSION_COUNT")) >= 1)
-    adapter._handle_message(_msg("MISSION_ACK", type=4, mission_type=0))  # NO_SPACE
-    assert runner.join(timeout=10)
-    assert isinstance(runner.error, MissionProtocolError)
-    assert runner.error.result_name == "NO_SPACE"
-    assert _item_seqs(master) == []
+    runner_a = _Runner(lambda: adapter.upload_mission(_mission(1)))
+    runner_a.start()
+    assert _play_upload(adapter, master, 2)  # home slot + 1 item
+    assert runner_a.join(timeout=10)
+    assert runner_a.error is None and runner_a.result.accepted is True
+
+    # residue in flight after A returned: relay-duplicated ERROR acks
+    adapter._handle_message(_msg("MISSION_ACK", type=1, mission_type=0))
+    adapter._handle_message(_msg("MISSION_ACK", type=1, mission_type=0))
+    # delivered while no session is open → dropped at the door
+    assert adapter._mission_inbox == []
+
+    # transaction B starts immediately; its begin() sleeps out the settle
+    started = time.monotonic()
+    runner_b = _Runner(lambda: adapter.upload_mission(_mission(1)))
+    runner_b.start()
+    assert _wait_until(lambda: len(_sent(master, "MISSION_COUNT")) >= 2)
+    assert time.monotonic() - started >= 0.05, "settle window was not awaited"
+    for seq in range(2):
+        adapter._handle_message(_msg("MISSION_REQUEST_INT", seq=seq, mission_type=0))
+        assert _wait_until(lambda s=seq: _item_seqs(master).count(s) >= 1)  # type: ignore[misc]
+    adapter._handle_message(_msg("MISSION_ACK", type=0, mission_type=0))
+    assert runner_b.join(timeout=10)
+    assert runner_b.error is None
+    assert runner_b.result.accepted is True
 
 
 def test_upload_operation_cancelled_is_uncertain(fast_timeouts: None) -> None:
@@ -1051,16 +1116,73 @@ def test_clear_happy_path_with_readback(fast_timeouts: None) -> None:
     assert outcome.observed_count == 0
 
 
-def test_clear_ack_rejected_is_typed_mission_rejection(fast_timeouts: None) -> None:
+def test_clear_residue_from_previous_transaction_is_quarantined(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """SITL-captured failure: a clear sent 2 ms after an upload's terminal ACK
+    consumed that upload's relay-duplicated MAV_MISSION_ERROR acks as a
+    rejection. With the settle quarantine the residue (delivered while no
+    session is open) is dropped, the clear proceeds, and the verified
+    read-back proves success."""
+    import mavctl.adapter.pymavlink_adapter as mod
+
+    monkeypatch.setattr(mod, "_MISSION_RESIDUE_SETTLE_S", 0.05)
+    adapter, master = _adapter()
+    # residue "in flight" before the clear starts
+    adapter._handle_message(_msg("MISSION_ACK", type=1, mission_type=0))
+    adapter._handle_message(_msg("MISSION_ACK", type=1, mission_type=0))
+    assert adapter._mission_inbox == []
+
+    runner = _Runner(lambda: adapter.clear_mission())
+    runner.start()
+    assert _wait_until(lambda: len(_sent(master, "MISSION_CLEAR_ALL")) >= 1)
+    adapter._handle_message(_msg("MISSION_ACK", type=0, mission_type=0))
+    assert _wait_until(lambda: len(_sent(master, "MISSION_REQUEST_LIST")) >= 1)
+    adapter._handle_message(_msg("MISSION_COUNT", count=0, mission_type=0))
+    assert runner.join(timeout=10)
+    assert runner.error is None
+    assert runner.result.verified is True
+    assert runner.result.observed_count == 0
+
+
+def test_clear_denied_ack_with_nonzero_readback_is_uncertain(
+    fast_timeouts: None,
+) -> None:
+    """A current-session DENIED ack never produces a silent success: the
+    transaction goes straight to the authoritative read-back, and a non-zero
+    remote count surfaces as uncertain with observed_count — the refusing ack
+    result is carried in the message for diagnosis."""
     adapter, master = _adapter()
     runner = _Runner(lambda: adapter.clear_mission())
     runner.start()
     assert _wait_until(lambda: len(_sent(master, "MISSION_CLEAR_ALL")) >= 1)
     adapter._handle_message(_msg("MISSION_ACK", type=14, mission_type=0))  # DENIED
+    # clear did not happen: the read-back observes the stored mission
+    assert _wait_until(lambda: len(_sent(master, "MISSION_REQUEST_LIST")) >= 1)
+    adapter._handle_message(_msg("MISSION_COUNT", count=2, mission_type=0))
     assert runner.join(timeout=10)
-    assert isinstance(runner.error, MissionProtocolError)
-    assert not isinstance(runner.error, MissionStateUncertainError)
-    assert runner.error.result_name == "DENIED"
+    assert isinstance(runner.error, MissionStateUncertainError)
+    assert runner.error.observed_count == 2
+    assert "vehicle ack: DENIED" in str(runner.error)
+
+
+def test_clear_denied_ack_on_empty_plan_still_ends_verified(
+    fast_timeouts: None,
+) -> None:
+    """A refused clear of an already-empty plan ends verified at count 0 —
+    the goal state (empty remote plan) holds. This is a documented design
+    choice: the read-back, not the ack, is the authoritative verdict."""
+    adapter, master = _adapter()
+    runner = _Runner(lambda: adapter.clear_mission())
+    runner.start()
+    assert _wait_until(lambda: len(_sent(master, "MISSION_CLEAR_ALL")) >= 1)
+    adapter._handle_message(_msg("MISSION_ACK", type=14, mission_type=0))  # DENIED
+    assert _wait_until(lambda: len(_sent(master, "MISSION_REQUEST_LIST")) >= 1)
+    adapter._handle_message(_msg("MISSION_COUNT", count=0, mission_type=0))
+    assert runner.join(timeout=10)
+    assert runner.error is None
+    assert runner.result.verified is True
+    assert runner.result.observed_count == 0
 
 
 def test_clear_ack_timeout_resends_once_then_uncertain(fast_timeouts: None) -> None:

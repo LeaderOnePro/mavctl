@@ -142,6 +142,32 @@ def _await_position(timeout: float = 20.0) -> tuple[float, float]:
     pytest.fail("no vehicle position from SITL within timeout")
 
 
+def _await_mission_empty(timeout: float = 20.0) -> dict[str, Any]:
+    """Preflight: poll the read-only download until the remote mission is
+    verifiably empty (read-back is authoritative).
+
+    Every mission test must start from a known-empty remote plan: a previous
+    test's cleanup is best-effort, and a residual mission would silently
+    change the next test's starting state. On timeout the last known remote
+    state is reported for diagnosis.
+    """
+
+    deadline = time.monotonic() + timeout
+    response = call_daemon("mission_download", timeout=30)
+    while time.monotonic() < deadline:
+        if response.ok:
+            items = ((response.result or {}).get("mission") or {}).get("items", [])
+            if not items:
+                return response.result or {}
+        time.sleep(0.25)
+        response = call_daemon("mission_download", timeout=30)
+    pytest.fail(
+        "remote mission not empty within timeout: "
+        f"ok={response.ok} error={response.error} "
+        f"result={(response.result or {}).get('mission')}"
+    )
+
+
 def _download_mission() -> dict[str, Any]:
     response = call_daemon("mission_download", timeout=30)
     assert response.ok is True, f"mission download failed: {response.error}"
@@ -204,6 +230,7 @@ def daemon(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
             )
         _await_ground_evidence()
         _await_home_position()
+        _await_mission_empty()
         yield
     finally:
         _best_effort_cleanup()
@@ -374,6 +401,8 @@ def test_cleanup_leaves_empty_mission_across_daemon_restart(daemon: None) -> Non
     assert state.get("connected") is True
     _await_ground_evidence()
     _await_home_position()
+    # NOTE: no empty-plan preflight here — this test intentionally uploads a
+    # mission BEFORE restarting the daemon; the verified clear below removes it.
 
     _clear_mission()
     mission = _download_mission()

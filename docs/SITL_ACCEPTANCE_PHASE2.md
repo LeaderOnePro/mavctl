@@ -443,6 +443,24 @@ uv run mavctl mission upload mission.json --confirm
 uv run mavctl daemon stop
 ```
 
+**稳定性调查记录（2026-09-28，shared 14550 拓扑）**：flaky 失败（约
+1/13 次 full-suite 运行，失败测试在 mission 测试间漂移）经 MAVProxy tlog
+线上取证定位根因——上传末项被 relay 复制投递（实测一份 item 四份到达），
+vehicle 对完成后的重复投達回答 `MAV_MISSION_ERROR`（type=1）×3，残留 ack
+在上一事务结束后 ~1–5 ms 内落进下一事务的 ACK 等待窗口（clear 被误报
+"rejected: ERROR"、下一 upload U1 被误杀、download COUNT 被误报 denied）。
+最终修复是 **session settle quarantine**（design §D.0.1）：新 mission
+session 开启前以 inactive 状态度过有界的 0.25 s settle 窗口，reader 线程
+在窗口内丢弃观察到的短寿命 relay 残留。这是 mavctl 的 relay 兼容性缓解
+措施——MAVLink `MISSION_ACK` 没有事务标识，**不是**完美的协议级事务关联；
+开门后的 ACK 按**当前事务**处理（策略而非证明）：U1 非零 ACK 按真实拒绝
+上报（NO_SPACE/UNSUPPORTED/DENIED → `mission_rejected`，不被吞掉），
+U2/U3 非零 ACK 保持 `remote_mission_state_uncertain`，clear 的非零 ACK
+直接进入权威 read-back 裁决（count==0 才 success）；歧义永远不会造成
+假成功，无法安全归因时一律保守上报。mock 回归测试固化 A–E 五条路径；
+fixture 增加 `_await_mission_empty()` preflight（每个 mission 测试开始
+前以只读 read-back 确认远端计划为空）。
+
 超时/不确定路径（`remote_mission_state_uncertain`，exit 6）仅能在受控
 harness 中验证（见 docs/design/mission-protocol-v1.md §I）。
 

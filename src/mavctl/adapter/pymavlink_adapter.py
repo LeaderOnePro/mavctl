@@ -119,6 +119,15 @@ _MISSION_COUNT_RESENDS = 2
 # match its expected request index (ArduPilot MissionItemProtocol
 # handle_mission_item [FACT]); the upload session stays alive.
 _MAV_MISSION_INVALID_SEQUENCE = 13
+# Relay-residue settle window: a MAVLink relay re-delivers the previous
+# transaction's final item and its acks within a few milliseconds of that
+# transaction's end (SITL-captured [FACT]: ACCEPTED at t, duplicate-item
+# MAV_MISSION_ERROR acks at t..t+1 ms). A new mission session therefore stays
+# INACTIVE for this long after the previous one ends — the reader thread drops
+# in-flight residue at the door — before opening and recording its session
+# start. Bounded, named, testable; it never blocks status/telemetry (mission
+# lock only) and never touches the COMMAND_ACK quarantine.
+_MISSION_RESIDUE_SETTLE_S = 0.25
 # GCS-side suppression window for a re-request of an item that was just sent.
 # Grounded [FACT]: ArduPilot re-requests an item at most once per second
 # (wp_recv_timeout_ms = 1000 ms + stream slowdown), so a duplicate request
@@ -276,7 +285,12 @@ class PymavlinkAdapter:
         self._mission_cond = threading.Condition()
         self._mission_active = False
         self._session_seq = 0
-        self._mission_inbox: list[tuple[str, Any]] = []
+        self._session_start_mono: float | None = None
+        self._last_mission_end_mono: float | None = None
+        # Entries carry (msg_type, msg, recv_monotonic); every entry in the
+        # inbox was received while THIS session was open, i.e. at or after
+        # ``_session_start_mono``.
+        self._mission_inbox: list[tuple[str, Any, float]] = []
 
     # -- lifecycle ---------------------------------------------------------
 
@@ -543,26 +557,30 @@ class PymavlinkAdapter:
                             # ACCEPTED stalls the transfer into the overall
                             # deadline, which still ends uncertain.
                             continue
-                        if result == _MAV_MISSION_INVALID_SEQUENCE:
+                        if result == _MAV_MISSION_INVALID_SEQUENCE and items_sent > 0:
                             # A re-delivered duplicate item the vehicle had
-                            # already accepted. ArduPilot keeps the upload
-                            # session alive on INVALID_SEQUENCE ([FACT]
-                            # handle_mission_item early-returns without
-                            # touching the session state), so tolerate and
-                            # keep answering requests.
+                            # already accepted; the upload session survives
+                            # INVALID_SEQUENCE ([FACT] handle_mission_item
+                            # early-returns without touching the session).
+                            # Post-quarantine this ack is current-session, so
+                            # it is provably duplicate-item residue of THIS
+                            # transfer — tolerate and keep answering requests.
                             continue
-                        # Phase-aware ACK mapping for genuine rejections.
-                        # Before any item is sent the vehicle cannot have
-                        # stored anything, so a rejection is clean; once items
-                        # are stored the remote mission is already modified
-                        # and the outcome must be treated as uncertain
-                        # (ArduPilot does not roll back accepted items on a
-                        # later error ACK).
                         if items_sent == 0:
+                            # U1 (current session, post-quarantine): the
+                            # vehicle's synchronous answer to OUR
+                            # MISSION_COUNT — count > max_items → NO_SPACE,
+                            # allocation failure → NO_SPACE, a foreign upload
+                            # session → DENIED. Genuine rejection: the vehicle
+                            # stored nothing.
                             raise MissionProtocolError(
                                 f"mission upload rejected: {mission_result_name(result)}",
                                 result_name=mission_result_name(result),
                             )
+                        # U2 with items already stored: a genuine vehicle
+                        # rejection (ArduPilot does not roll back accepted
+                        # items on a later error ACK) → remote mission
+                        # modified → uncertain.
                         raise uncertain(
                             f"vehicle rejected the upload after {items_sent} "
                             f"item(s): {mission_result_name(result)}"
@@ -632,10 +650,16 @@ class PymavlinkAdapter:
                                 sent_upto=count - 1,
                             )
                         if result == _MAV_MISSION_INVALID_SEQUENCE:
-                            # A duplicate item was re-delivered inside the
-                            # terminal window and rejected; the vehicle's
-                            # session is intact — keep waiting for the real
-                            # terminal ACK until the overall deadline.
+                            # Duplicate-item residue: the relay re-delivers
+                            # the final item after the vehicle already
+                            # completed the transfer and the vehicle answers
+                            # those with INVALID_SEQUENCE ([FACT]) while the
+                            # real terminal ACCEPTED is in flight. Keep
+                            # waiting for it; any other non-ACCEPTED result is
+                            # a genuine current-session rejection → uncertain
+                            # below, and the vehicle's 8 s
+                            # OPERATION_CANCELLED still ends the wait
+                            # immediately as uncertain.
                             continue
                         # U3: every item was already sent and stored — any
                         # non-ACCEPTED result (including the vehicle's 8 s
@@ -714,9 +738,10 @@ class PymavlinkAdapter:
                             # INVALID_SEQUENCE) here is a stale duplicate of a
                             # previous transaction's terminal ACK — common on
                             # a duplicating relay; tolerate and keep waiting
-                            # for the COUNT.
+                            # for the COUNT. Other results are genuine
+                            # denials (typically DENIED while a vehicle-side
+                            # upload is in flight).
                             continue
-                        # Typically DENIED: a vehicle-side upload is in flight.
                         raise MissionProtocolError(
                             f"vehicle denied mission download: {mission_result_name(result)}",
                             result_name=mission_result_name(result),
@@ -850,6 +875,7 @@ class PymavlinkAdapter:
             try:
                 self._send_mission_clear_all(master)
                 resends = 0
+                ack_result: str | None = None
                 while True:
                     until = min(overall, time.monotonic() + _MISSION_REQUEST_TIMEOUT_S)
                     _, msg = self._wait_mission(accept_clear_ack, until)
@@ -867,23 +893,27 @@ class PymavlinkAdapter:
                         self._send_mission_clear_all(master)
                         continue
                     result = int(msg.type)
-                    if result == _MAV_MISSION_INVALID_SEQUENCE:
-                        # A stray INVALID_SEQUENCE copy (e.g. relay-duplicated
-                        # residue of an aborted upload) says nothing about the
-                        # clear outcome; the mandatory count read-back below
-                        # is the authoritative verification.
-                        continue
+                    # Post-quarantine this ack is current-session: a non-zero
+                    # result is the vehicle's genuine refusal (e.g. DENIED
+                    # while a foreign upload is in flight, ERROR from a failed
+                    # clear). It is NOT treated as final here and can never
+                    # produce a silent success: the count read-back below is
+                    # the authoritative verdict. A refusal on an already-empty
+                    # plan still ends verified at count 0 (the goal state
+                    # holds); a genuinely failed clear leaves a non-zero count
+                    # → uncertain with observed_count, and the refusing ack
+                    # result is carried in the message for diagnosis.
                     if result != 0:
-                        raise MissionProtocolError(
-                            f"mission clear rejected: {mission_result_name(result)}",
-                            result_name=mission_result_name(result),
-                        )
+                        ack_result = mission_result_name(result)
                     break
                 # Read-back verification inside the same mission session.
                 observed = self._request_count_locked(master, overall)
                 if observed != 0:
+                    message = f"remote mission count {observed} after clear"
+                    if ack_result is not None:
+                        message += f" (vehicle ack: {ack_result})"
                     raise MissionStateUncertainError(
-                        f"remote mission count {observed} after clear",
+                        message,
                         observed_count=observed,
                     )
                 return MissionOutcome(
@@ -1067,9 +1097,11 @@ class PymavlinkAdapter:
         streams this is a harmless duplicate.
         """
 
+        self._settle_previous_session()
         with self._mission_cond:
             self._session_seq += 1
             self._mission_active = True
+            self._session_start_mono = time.monotonic()
             self._mission_inbox.clear()
         master = self._master
         if master is not None:
@@ -1095,11 +1127,35 @@ class PymavlinkAdapter:
                 )
 
     def _end_mission_session(self) -> None:
-        """Deactivate delivery and clear the inbox."""
+        """Deactivate delivery and clear the inbox; record the end time so the
+        next session's residue settle window can be bounded."""
 
         with self._mission_cond:
             self._mission_active = False
             self._mission_inbox.clear()
+            self._last_mission_end_mono = time.monotonic()
+
+    def _settle_previous_session(self) -> None:
+        """Quarantine: let the previous session's relay residue drain.
+
+        Called (with ``_mission_lock`` held) before a new session opens. While
+        the previous session is closed, the reader thread drops every
+        in-flight MISSION_* message at the door — including relay
+        re-deliveries of the previous transaction's final item and its acks.
+        This waits out the bounded settle window only when the previous
+        session ended within it; the sleep happens OUTSIDE the condition lock
+        so the reader thread keeps draining (and dropping) meanwhile. After
+        the settle, the new session opens and records its start time: every
+        later inbox entry is current-session by construction, so U1 ACK
+        rejections retain their genuine ``mission_rejected`` semantics.
+        """
+
+        with self._mission_cond:
+            last_end = self._last_mission_end_mono
+        if last_end is not None:
+            remaining = last_end + _MISSION_RESIDUE_SETTLE_S - time.monotonic()
+            if remaining > 0:
+                time.sleep(remaining)
 
     def _deliver_mission(self, msg: Any) -> None:
         """Route an inbound ``MISSION_*`` message to the active transaction.
@@ -1120,7 +1176,7 @@ class PymavlinkAdapter:
         with self._mission_cond:
             if not self._mission_active or session_token != self._session_seq:
                 return
-            self._mission_inbox.append((msg.get_type(), msg))
+            self._mission_inbox.append((msg.get_type(), msg, time.monotonic()))
             self._mission_cond.notify_all()
 
     def _wait_mission(
@@ -1139,7 +1195,7 @@ class PymavlinkAdapter:
             while True:
                 index = 0
                 while index < len(self._mission_inbox):
-                    msg_type, msg = self._mission_inbox[index]
+                    msg_type, msg, _recv_mono = self._mission_inbox[index]
                     del self._mission_inbox[index]
                     if accept(msg_type, msg):
                         return msg_type, msg
