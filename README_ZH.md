@@ -93,6 +93,18 @@ checkout（revision `4c98c9221a`；唯一经审阅的源码修改是 `AP_FWVersi
 多载具协同
 ```
 
+0.3.0 主要变化：
+
+- Mission Protocol Core（Phase 3A）：`mavctl mission upload / download /
+  clear`——ArduPilot 优先的 Mission JSON v1（`takeoff`/`waypoint`/`land`/
+  `rtl`），无损或失败的 download，新鲜地面证据 guard，clear 经计数读回验证。
+- ArduPilot 兼容：home-slot wire 约定、float `MISSION_REQUEST` 上传节奏、
+  已验证共享 MAVProxy 拓扑上的 relay 残留 settle 隔离。
+- 独立的 mavctl GCS 身份（默认 source system 254、component 190；
+  `mavctl daemon start --source-system <1..255>`），与 255 上的常规 GCS 共存。
+- mission 支持仅限 ArduPilot SITL 验证——不声明真实飞机；mission
+  execution / start / AUTO 有意未包含（Phase 3B）。
+
 0.2.1 主要变化：
 
 - `mavctl --version` 直接输出版本号——不需要 daemon 或载具。
@@ -144,10 +156,10 @@ uv run mavctl daemon stop
 
 ## 从 PyPI 安装
 
-mavctl 0.2.0 已发布到正式 PyPI。安装方式：
+mavctl 0.3.0 已发布到正式 PyPI。安装方式：
 
 ```bash
-uv tool install mavctl
+uv tool install --upgrade mavctl
 # 或者不持久安装、跑一次就走：
 uvx mavctl --help
 # 或者：

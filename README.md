@@ -101,6 +101,22 @@ Firmware flashing
 Multi-vehicle orchestration
 ```
 
+Notable in 0.3.0:
+
+- Mission Protocol Core (Phase 3A): `mavctl mission upload / download /
+  clear` — ArduPilot-first Mission JSON v1 (`takeoff`/`waypoint`/`land`/
+  `rtl`), lossless-or-fail download, fresh-ground guards, clear verified by
+  count read-back.
+- ArduPilot compatibility: home-slot wire convention, float
+  `MISSION_REQUEST` upload pacing, relay-residue settle quarantine on the
+  validated shared MAVProxy topology.
+- Distinct mavctl GCS identity (default source system 254, component 190;
+  `mavctl daemon start --source-system <1..255>`) so mavctl coexists with a
+  conventional GCS on 255.
+- Mission support is ArduPilot SITL validated only — no real-aircraft
+  claim; mission execution / start / AUTO is intentionally not included
+  (Phase 3B).
+
 Notable in 0.2.1:
 
 - `mavctl --version` prints the installed version — no daemon or vehicle
@@ -157,10 +173,10 @@ Safety notes — read before pointing mavctl at anything that flies:
 
 ## Install from PyPI
 
-mavctl 0.2.0 is published on production PyPI. Install with:
+mavctl 0.3.0 is published on production PyPI. Install with:
 
 ```bash
-uv tool install mavctl
+uv tool install --upgrade mavctl
 # or run once without a persistent install:
 uvx mavctl --help
 # or:

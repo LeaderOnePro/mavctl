@@ -135,7 +135,7 @@ def test_readme_documents_the_pypi_install_channels() -> None:
 
 def test_readme_states_pypi_install_availability() -> None:
     assert "## Install from PyPI" in _README
-    assert "mavctl 0.2.0 is published on production PyPI" in _README
+    assert "mavctl 0.3.0 is published on production PyPI" in _README
     # Stale pre-release wording must not survive the release.
     for stale in ("not available yet", "package is not published", "is being prepared"):
         assert stale not in _README, stale
@@ -209,7 +209,7 @@ def test_chinese_readme_documents_the_pypi_install_channels() -> None:
 
 def test_chinese_readme_states_pypi_install_availability() -> None:
     assert "## 从 PyPI 安装" in _ZH_README
-    assert "mavctl 0.2.0 已发布到正式 PyPI" in _ZH_README
+    assert "mavctl 0.3.0 已发布到正式 PyPI" in _ZH_README
     # Stale pre-release wording must not survive the release.
     for stale in ("尚未发布", "暂未发布", "即将发布"):
         assert stale not in _ZH_README, stale
@@ -384,6 +384,21 @@ def test_publishing_doc_states_022_dev_not_published() -> None:
     )
     # No 0.2.2 release record may exist while only the dev version is out.
     assert "## Production release record: 0.2.2" not in _PUBLISHING
+
+
+def test_readmes_highlight_the_030_notable_changes() -> None:
+    # The 0.3.0 highlight section: Phase 3A mission surface, ArduPilot
+    # compatibility, the distinct GCS identity, and the SITL-only scope
+    # note — present in both READMEs, newest release first.
+    en_facts = ("Notable in 0.3.0:", "mission upload / download",
+                "home-slot wire convention", "source system 254",
+                "SITL validated only")
+    zh_facts = ("0.3.0 主要变化", "mission upload / download",
+                "home-slot wire 约定", "source system 254",
+                "SITL 验证")
+    for readme, facts in ((_README, en_facts), (_ZH_README, zh_facts)):
+        for fact in facts:
+            assert fact in readme, fact
 
 
 def test_readmes_highlight_the_021_notable_changes() -> None:
