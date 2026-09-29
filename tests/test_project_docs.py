@@ -2,9 +2,9 @@
 
 These tests keep the public entry documents honest about what mavctl can do
 today: the README must document only real commands and state the PyPI channel
-accurately (the published production release is 0.2.0 — no other version may
-be claimed as released), and the publish workflow must refuse anything but
-formal vX.Y.Z release tags.
+accurately (the published production releases are 0.2.0, 0.2.1 and 0.3.0 —
+no other version may be claimed as released), and the publish workflow must
+refuse anything but formal vX.Y.Z release tags.
 """
 
 from __future__ import annotations
@@ -38,7 +38,8 @@ _FORCE_ARM_INVOCATION = re.compile(r"mavctl\s+arm\b[^\n]*--force", re.IGNORECASE
 
 _PYPI_INSTALL_COMMANDS = ("uv tool install mavctl", "uvx mavctl", "pipx install mavctl")
 
-# "mavctl X.Y.Z is published on production PyPI" — only 0.2.0 may ever match.
+# "mavctl X.Y.Z is published on production PyPI" — only 0.2.0/0.2.1/0.3.0
+# may match.
 _VERSIONED_PUBLISHED_CLAIM = re.compile(
     r"\bmavctl\s+(\d+\.\d+\.\d+)\s+(?:is|has\s+been)\s+published\s+on\s+production",
     re.IGNORECASE,
@@ -292,8 +293,8 @@ def test_pyproject_packaging_metadata_is_release_ready_shape() -> None:
     assert metadata_line(r'^readme = "README\.md"$')
     assert metadata_line(r'^license = "MIT"$')
     # The release version promoted on the release branch. Published
-    # production releases remain 0.2.0 and 0.2.1 until the v0.3.0 tag and
-    # PyPI publication happen (see the claim test above).
+    # production releases: 0.2.0, 0.2.1 and 0.3.0 (see the claim test above);
+    # the next dev version moves forward per the 0.3.0 release record.
     assert metadata_line(r'^version = "0\.3\.0"$')
     assert metadata_line(r'^mavctl = "[^"]+"$')
     license_text = (_ROOT / "LICENSE").read_text(encoding="utf-8")
@@ -365,11 +366,11 @@ def test_readme_mission_surface_lists_exactly_the_implemented_commands() -> None
 def test_readme_mission_section_is_ardupilot_first_and_sitl_only() -> None:
     # Phase 3A wording invariants: ArduPilot-first JSON, SITL-validated only,
     # no real-aircraft claim, locally modified ArduPilot provenance.
-    for readme, sitl_marker, craft_marker in (
-        (_README, "SITL validated only", "real-aircraft"),
-        (_ZH_README, "SITL 验证", "真实飞机"),
+    for readme, first_marker, sitl_marker, craft_marker in (
+        (_README, "ArduPilot-first", "SITL validated only", "real-aircraft"),
+        (_ZH_README, "ArduPilot 优先", "SITL 验证", "真实飞机"),
     ):
-        assert "ArduPilot-first" in readme or "ArduPilot-first" in _README
+        assert first_marker in readme
         assert sitl_marker in readme
         assert craft_marker in readme
         assert "4c98c9221a" in readme
@@ -401,6 +402,9 @@ def test_readmes_highlight_the_030_notable_changes() -> None:
     for readme, facts in ((_README, en_facts), (_ZH_README, zh_facts)):
         for fact in facts:
             assert fact in readme, fact
+        # newest release first: the 0.3.0 section precedes the 0.2.1 one
+        assert readme.index(facts[0]) < readme.index(
+            "Notable in 0.2.1:" if readme is _README else "0.2.1 主要变化")
 
 
 def test_readmes_highlight_the_021_notable_changes() -> None:
