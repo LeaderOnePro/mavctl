@@ -2,9 +2,9 @@
 
 These tests keep the public entry documents honest about what mavctl can do
 today: the README must document only real commands and state the PyPI channel
-accurately (the published production release is 0.2.0 — no other version may
-be claimed as released), and the publish workflow must refuse anything but
-formal vX.Y.Z release tags.
+accurately (the published production releases are 0.2.0, 0.2.1 and 0.3.0 —
+no other version may be claimed as released), and the publish workflow must
+refuse anything but formal vX.Y.Z release tags.
 """
 
 from __future__ import annotations
@@ -38,7 +38,8 @@ _FORCE_ARM_INVOCATION = re.compile(r"mavctl\s+arm\b[^\n]*--force", re.IGNORECASE
 
 _PYPI_INSTALL_COMMANDS = ("uv tool install mavctl", "uvx mavctl", "pipx install mavctl")
 
-# "mavctl X.Y.Z is published on production PyPI" — only 0.2.0 may ever match.
+# "mavctl X.Y.Z is published on production PyPI" — only 0.2.0/0.2.1/0.3.0
+# may match.
 _VERSIONED_PUBLISHED_CLAIM = re.compile(
     r"\bmavctl\s+(\d+\.\d+\.\d+)\s+(?:is|has\s+been)\s+published\s+on\s+production",
     re.IGNORECASE,
@@ -135,7 +136,7 @@ def test_readme_documents_the_pypi_install_channels() -> None:
 
 def test_readme_states_pypi_install_availability() -> None:
     assert "## Install from PyPI" in _README
-    assert "mavctl 0.2.0 is published on production PyPI" in _README
+    assert "mavctl 0.3.0 is published on production PyPI" in _README
     # Stale pre-release wording must not survive the release.
     for stale in ("not available yet", "package is not published", "is being prepared"):
         assert stale not in _README, stale
@@ -151,7 +152,7 @@ def test_only_the_released_version_is_claimed_published() -> None:
     corpus = f"{_README}\n{_ZH_README}\n{_PUBLISHING}"
     claimed = set(_VERSIONED_PUBLISHED_CLAIM.findall(corpus))
     claimed |= set(_CHINESE_VERSIONED_PUBLISHED_CLAIM.findall(corpus))
-    assert claimed <= {"0.2.0", "0.2.1", "0.3.0"}, claimed
+    assert claimed == {"0.2.0", "0.2.1", "0.3.0"}, claimed
     for future in ("0.3.1", "0.4.0"):
         assert not re.search(
             rf"\bmavctl\s+{re.escape(future)}\s+(?:is|has\s+been)\s+published",
@@ -209,7 +210,7 @@ def test_chinese_readme_documents_the_pypi_install_channels() -> None:
 
 def test_chinese_readme_states_pypi_install_availability() -> None:
     assert "## 从 PyPI 安装" in _ZH_README
-    assert "mavctl 0.2.0 已发布到正式 PyPI" in _ZH_README
+    assert "mavctl 0.3.0 已发布到正式 PyPI" in _ZH_README
     # Stale pre-release wording must not survive the release.
     for stale in ("尚未发布", "暂未发布", "即将发布"):
         assert stale not in _ZH_README, stale
@@ -292,8 +293,8 @@ def test_pyproject_packaging_metadata_is_release_ready_shape() -> None:
     assert metadata_line(r'^readme = "README\.md"$')
     assert metadata_line(r'^license = "MIT"$')
     # The release version promoted on the release branch. Published
-    # production releases remain 0.2.0 and 0.2.1 until the v0.3.0 tag and
-    # PyPI publication happen (see the claim test above).
+    # production releases: 0.2.0, 0.2.1 and 0.3.0 (see the claim test above);
+    # the next dev version moves forward per the 0.3.0 release record.
     assert metadata_line(r'^version = "0\.3\.0"$')
     assert metadata_line(r'^mavctl = "[^"]+"$')
     license_text = (_ROOT / "LICENSE").read_text(encoding="utf-8")
@@ -365,25 +366,45 @@ def test_readme_mission_surface_lists_exactly_the_implemented_commands() -> None
 def test_readme_mission_section_is_ardupilot_first_and_sitl_only() -> None:
     # Phase 3A wording invariants: ArduPilot-first JSON, SITL-validated only,
     # no real-aircraft claim, locally modified ArduPilot provenance.
-    for readme, sitl_marker, craft_marker in (
-        (_README, "SITL validated only", "real-aircraft"),
-        (_ZH_README, "SITL 验证", "真实飞机"),
+    for readme, first_marker, sitl_marker, craft_marker in (
+        (_README, "ArduPilot-first", "SITL validated only", "real-aircraft"),
+        (_ZH_README, "ArduPilot 优先", "SITL 验证", "真实飞机"),
     ):
-        assert "ArduPilot-first" in readme or "ArduPilot-first" in _README
+        assert first_marker in readme
         assert sitl_marker in readme
         assert craft_marker in readme
         assert "4c98c9221a" in readme
         assert "AP_FWVersion.h" in readme
 
 
-def test_publishing_doc_states_022_dev_not_published() -> None:
-    assert "## Development state: 0.2.2.dev0" in _PUBLISHING
+def test_publishing_doc_records_022_dev_version_history() -> None:
+    # 0.2.2.dev0 was the Phase 3A development version and was never
+    # released — the section must stay a historical note, and no 0.2.2
+    # production release record may exist.
+    assert "## Version history note: 0.2.2.dev0 (never released)" in _PUBLISHING
     normalized = " ".join(_PUBLISHING.split())
-    assert "It is **not** published" in normalized or (
-        "mavctl 0.2.2 is under development" in normalized
-    )
-    # No 0.2.2 release record may exist while only the dev version is out.
+    assert "0.2.2.dev0" in normalized
+    assert "**0.2.2 was never released**" in normalized
+    assert "shipped as part of 0.3.0" in normalized
     assert "## Production release record: 0.2.2" not in _PUBLISHING
+
+
+def test_readmes_highlight_the_030_notable_changes() -> None:
+    # The 0.3.0 highlight section: Phase 3A mission surface, ArduPilot
+    # compatibility, the distinct GCS identity, and the SITL-only scope
+    # note — present in both READMEs, newest release first.
+    en_facts = ("Notable in 0.3.0:", "mission upload / download",
+                "home-slot wire convention", "source system 254",
+                "SITL validated only")
+    zh_facts = ("0.3.0 主要变化", "mission upload / download",
+                "home-slot wire 约定", "source system 254",
+                "SITL 验证")
+    for readme, facts in ((_README, en_facts), (_ZH_README, zh_facts)):
+        for fact in facts:
+            assert fact in readme, fact
+        # newest release first: the 0.3.0 section precedes the 0.2.1 one
+        assert readme.index(facts[0]) < readme.index(
+            "Notable in 0.2.1:" if readme is _README else "0.2.1 主要变化")
 
 
 def test_readmes_highlight_the_021_notable_changes() -> None:
@@ -425,14 +446,15 @@ def test_testpypi_record_keeps_denying_production_equivalence() -> None:
 
 def test_publishing_doc_records_production_release() -> None:
     assert "mavctl 0.2.0 is published on production PyPI" in _PUBLISHING
-    assert "Production PyPI release: mavctl 0.2.0" in _PUBLISHING
     assert "Released: 2026-08-26" in _PUBLISHING
     assert "GitHub Actions OIDC Trusted Publishing" in _PUBLISHING
     assert "wheel and sdist" in _PUBLISHING
     assert "clean-venv install" in _PUBLISHING
-    # Forward-only versioning guidance for the next release cycle.
+    # Historical mention: 0.2.2.dev0 appears only in the never-released
+    # version-history note; the current guidance names 0.3.1.dev0/0.4.0.dev0.
     assert "0.2.2.dev0" in _PUBLISHING
-    assert "0.3.0.dev0" in _PUBLISHING
+    assert "0.3.1.dev0" in _PUBLISHING
+    assert "0.4.0.dev0" in _PUBLISHING
     # Whitespace-normalized: the sentence wraps across source lines.
     assert (
         "Never re-publish an existing version number"

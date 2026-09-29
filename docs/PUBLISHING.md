@@ -1,7 +1,7 @@
 # Publishing mavctl to PyPI
 
-Status: **released** — mavctl 0.2.0 is published on production PyPI
-(2026-08-26). This document remains the operator runbook for every future
+Status: **released** — mavctl 0.3.0 is published on production PyPI
+(2026-09-28). This document remains the operator runbook for every future
 release.
 
 ## Package name
@@ -21,25 +21,27 @@ PyPI JSON API returned 404 for `pypi.org/pypi/mavctl/json`).
   - Release tags are strictly `vX.Y.Z` (e.g. `v0.2.0`). The publish workflow
     rejects every other shape and additionally cross-checks that the tag
     equals the package version.
-- The published `0.2.0` and `0.2.1` are immutable on PyPI. The next
-  development version must move forward from 0.2.1, for example
-  `0.2.2.dev0` (patch) or `0.3.0.dev0` (feature/minor), and release later
-  as `0.2.2` / `0.3.0`. Never re-publish an existing version number.
+- The published `0.2.0`, `0.2.1` and `0.3.0` are immutable on PyPI. The
+  next development version must move forward from 0.3.0, for example
+  `0.3.1.dev0` (patch) or `0.4.0.dev0` (feature/minor), and release later
+  as `0.3.1` / `0.4.0`. Never re-publish an existing version number.
 
 ## Production release record
 
-Production PyPI release: mavctl 0.2.0
+mavctl 0.2.0 is published on production PyPI.
 
 - Released: 2026-08-26
 - Publishing method: GitHub Actions OIDC Trusted Publishing
 - Published artifacts: wheel and sdist
 - Verification: clean-venv install, `mavctl --help`, `mavctl daemon --help`
 
-## Development state: 0.2.2.dev0
+## Version history note: 0.2.2.dev0 (never released)
 
-mavctl 0.2.2 is under development (`0.2.2.dev0` in `pyproject.toml` on the
-development branch). It is **not** published: production releases remain
-0.2.0 and 0.2.1, and no 0.2.2 release record exists yet.
+`0.2.2.dev0` was the development version during the Phase 3A mission cycle
+(the daemon-consistency work from PR #23 shipped as part of 0.3.0). The
+version was promoted straight to `0.3.0` for the feature release; **0.2.2
+was never released** on TestPyPI or production PyPI, and no 0.2.2 release
+record exists.
 
 ## Production release record: 0.2.1
 
@@ -179,6 +181,8 @@ Then connect the installed tool to SITL once
 ships a working entrypoint.
 
 ## Production release record: 0.3.0
+
+mavctl 0.3.0 is published on production PyPI.
 
 - Released: 2026-09-28
 - Version: 0.3.0

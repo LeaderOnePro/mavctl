@@ -1,7 +1,7 @@
 [project]
 name = "mavctl"
-# Release under preparation. docs/PUBLISHING.md records the release procedure:
-# the v0.2.1 tag is created only after the release PR has merged.
+# Released versions are cut from release branches: the vX.Y.Z tag is created
+# only after the release PR has merged (docs/PUBLISHING.md is the runbook).
 version = "0.3.0"
 description = "Headless, agent-first MAVLink ground-control CLI for ArduPilot vehicles"
 readme = "README.md"
