@@ -13,20 +13,22 @@ Companion repo idea: a standalone "drone-domain Agent Harness" is a
 
 | Item | State |
 | --- | --- |
-| PyPI latest stable release | `0.2.1` |
-| main development version | `0.2.2.dev0` |
+| PyPI latest stable release | `0.3.0` |
+| main development version | none — `0.3.0` is released; the next dev version moves forward to `0.3.1.dev0` / `0.4.0.dev0` |
 | Phase 1 (daemon + CLI + link/status/telemetry) | **done** (PR #1, tag `v0.1.0-phase1`) |
 | Phase 2 (flight control + guards + ACK safety) | **done** (tags `v0.2.0-phase2`, `v0.2.0`) |
 | Phase 2.1 (freshness metadata, `ground_state_stale`, `--version`) | **done** (PR #14) |
-| 0.2.2 daemon consistency (heartbeat single threshold, mode TOCTOU) | **done on main**, unreleased (`0.2.2.dev0`, PR #23) |
-| Mission protocol | **not started** |
+| 0.2.2 daemon consistency (heartbeat single threshold, mode TOCTOU) | **done**, shipped inside `0.3.0` (PR #23; the `0.2.2.dev0` version was never released) |
+| Mission protocol (Phase 3A) | **done, released in `0.3.0`** (PR #27 core, PR #28 relay stability, PR #29 release prep, tag `v0.3.0`) |
+| Mission execution (Phase 3B) | **design merged** (`docs/design/mission-execution-phase3b.md`, issue #31), unimplemented |
 | Platform support | macOS/Linux. Windows native IPC is design-only: Issue #19 |
 | Agent Skill install | `npx skills add LeaderOnePro/mavctl -y -g` (verified against skills CLI 1.5.23; see `docs/SKILLS_CLI_ACCEPTANCE.md`) |
-| Validation scope | ArduPilot SITL (ArduCopter, `udp:127.0.0.1:14550`): link/status/telemetry, guarded arm/disarm/mode/takeoff/land/rtl, `--wait`, freshness, link-loss exit 4, mode-map unavailability. **No real-aircraft validation** |
+| Validation scope | ArduPilot SITL (ArduCopter, `udp:127.0.0.1:14550`): link/status/telemetry, guarded arm/disarm/mode/takeoff/land/rtl, `--wait`, freshness, link-loss exit 4, mode-map unavailability, mission conformance (`upload → lossless download → clear → empty read-back`, shared MAVProxy + isolated no-MAVProxy topologies). **No real-aircraft validation** |
 
 Current command surface (complete list): `daemon start|stop|status`,
 `status`, `telemetry`, `arm`, `disarm`, `mode`, `takeoff --alt`, `land`,
-`rtl`, `--version`; every command supports `--json`. All state-changing
+`rtl`, `mission upload|download|clear`, `--version`; every command supports
+`--json`. All state-changing
 commands require `--confirm` and support `--dry-run`; only `mode`,
 `takeoff`, `land`, and `rtl` support `--wait` / `--timeout` — `arm` and
 `disarm` do not.
@@ -36,11 +38,11 @@ Open issues and their true standing:
 | Issue | Standing |
 | --- | --- |
 | #19 Windows native daemon IPC | open, **design doc merged** (`docs/design/windows-native-support.md`), unimplemented |
-| #21 emergency interruption of long `--wait` | open, design+implementation tracking, deliberately not quick-fixed |
+| #21 emergency interruption of long `--wait` | open, design+implementation tracking (Phase 3B design §E leans operation model), deliberately not quick-fixed |
 | #22 BATTERY_STATUS multi-battery policy | open, design issue (SYS_STATUS coverage is correct and wire-tested) |
 | #4 EKF / pre-arm health guard | open, **not started** — candidate for Phase 4 |
-| #5 freshness metadata | open but **delivered by Phase 2.1** (PR #14); candidate for closure after confirmation |
-| #6 HOME_POSITION / EXTENDED_SYS_STATE source-filter tests | open but **delivered by Phase 2.1** (adapter tests); candidate for closure after confirmation |
+| #25 Phase 3A mission core | **closed** — implemented and released in `0.3.0` |
+| #31 Phase 3B execution design | open, **design merged** (`docs/design/mission-execution-phase3b.md`), unimplemented |
 
 ---
 
@@ -74,9 +76,13 @@ mavctl **is not / must not become**:
 
 ### Phase 3A — mission protocol core
 
+**Status: delivered in mavctl `0.3.0`** (PR #27 core, PR #28 relay
+stability; details in `docs/design/mission-protocol-v1.md`). The capability
+list below is kept as designed.
+
 - **Goal**: upload, download, and clear waypoint/mission plans on
   the vehicle via MAVLink mission protocol.
-- **User-visible capabilities** (planned, not implemented):
+- **User-visible capabilities** (delivered):
 
   ```bash
   mavctl mission upload <mission.json> --confirm [--dry-run]
@@ -124,6 +130,9 @@ mavctl **is not / must not become**:
   (minor bump), after the `0.2.x` line closes.
 
 ### Phase 3B — mission execution / observation
+
+**Status: design merged** (`docs/design/mission-execution-phase3b.md`,
+issue #31) — unimplemented.
 
 - **Goal**: start/pause-resume/stop mission execution; observe progress.
 - **User-visible capabilities** (planned):
