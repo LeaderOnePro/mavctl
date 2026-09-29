@@ -151,7 +151,7 @@ def test_only_the_released_version_is_claimed_published() -> None:
     corpus = f"{_README}\n{_ZH_README}\n{_PUBLISHING}"
     claimed = set(_VERSIONED_PUBLISHED_CLAIM.findall(corpus))
     claimed |= set(_CHINESE_VERSIONED_PUBLISHED_CLAIM.findall(corpus))
-    assert claimed <= {"0.2.0", "0.2.1", "0.3.0"}, claimed
+    assert claimed == {"0.2.0", "0.2.1", "0.3.0"}, claimed
     for future in ("0.3.1", "0.4.0"):
         assert not re.search(
             rf"\bmavctl\s+{re.escape(future)}\s+(?:is|has\s+been)\s+published",
@@ -376,13 +376,15 @@ def test_readme_mission_section_is_ardupilot_first_and_sitl_only() -> None:
         assert "AP_FWVersion.h" in readme
 
 
-def test_publishing_doc_states_022_dev_not_published() -> None:
-    assert "## Development state: 0.2.2.dev0" in _PUBLISHING
+def test_publishing_doc_records_022_dev_version_history() -> None:
+    # 0.2.2.dev0 was the Phase 3A development version and was never
+    # released — the section must stay a historical note, and no 0.2.2
+    # production release record may exist.
+    assert "## Version history note: 0.2.2.dev0 (never released)" in _PUBLISHING
     normalized = " ".join(_PUBLISHING.split())
-    assert "It is **not** published" in normalized or (
-        "mavctl 0.2.2 is under development" in normalized
-    )
-    # No 0.2.2 release record may exist while only the dev version is out.
+    assert "0.2.2.dev0" in normalized
+    assert "**0.2.2 was never released**" in normalized
+    assert "shipped as part of 0.3.0" in normalized
     assert "## Production release record: 0.2.2" not in _PUBLISHING
 
 
@@ -440,14 +442,15 @@ def test_testpypi_record_keeps_denying_production_equivalence() -> None:
 
 def test_publishing_doc_records_production_release() -> None:
     assert "mavctl 0.2.0 is published on production PyPI" in _PUBLISHING
-    assert "Production PyPI release: mavctl 0.2.0" in _PUBLISHING
     assert "Released: 2026-08-26" in _PUBLISHING
     assert "GitHub Actions OIDC Trusted Publishing" in _PUBLISHING
     assert "wheel and sdist" in _PUBLISHING
     assert "clean-venv install" in _PUBLISHING
-    # Forward-only versioning guidance for the next release cycle.
+    # Historical mention: 0.2.2.dev0 appears only in the never-released
+    # version-history note; the current guidance names 0.3.1.dev0/0.4.0.dev0.
     assert "0.2.2.dev0" in _PUBLISHING
-    assert "0.3.0.dev0" in _PUBLISHING
+    assert "0.3.1.dev0" in _PUBLISHING
+    assert "0.4.0.dev0" in _PUBLISHING
     # Whitespace-normalized: the sentence wraps across source lines.
     assert (
         "Never re-publish an existing version number"
