@@ -148,8 +148,9 @@ cancelled. Re-check the vehicle with `mavctl status --json` and inspect
 ## operation_not_found (exit 2, operation get)
 
 The daemon has no record of that operation id — typically after a daemon
-restart (the registry is in-memory). This does **not** mean the vehicle
-action did not happen; re-check `mavctl status --json`.
+restart (the registry is in-memory) or because the operation was evicted
+by the bounded retention window. This does **not** mean the vehicle action
+did not happen; re-check `mavctl status --json`.
 
 ## altitude_limit / invalid_altitude (exit 5 / exit 2, takeoff)
 
