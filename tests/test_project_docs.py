@@ -22,7 +22,7 @@ _SKILLS_ACCEPTANCE = (_ROOT / "docs" / "SKILLS_CLI_ACCEPTANCE.md").read_text(enc
 
 _SUPPORTED_COMMANDS = frozenset(
     {"status", "telemetry", "arm", "disarm", "mode", "takeoff", "land", "rtl",
-     "daemon", "mission"}
+     "daemon", "mission", "operation"}
 )
 
 _MAVCTL_INVOCATION = re.compile(r"mavctl\s+([A-Za-z][A-Za-z0-9_-]*)")

@@ -131,6 +131,26 @@ ArduPilot mission wire convention or the home stream is missing; retry once
 the link is fully up, otherwise use a full GCS to inspect that mission.
 Nothing was modified.
 
+## operation_wait_timeout (exit 6, takeoff/land/rtl --wait)
+
+The command was **accepted by the vehicle**; only your client wait expired.
+The daemon keeps observing: query `mavctl operation get <id> --json` or
+`mavctl status --json`. Never treat this as "the vehicle action was
+cancelled".
+
+## operation_superseded (exit 6, takeoff/land/rtl --wait)
+
+A later accepted command (e.g. `rtl`, `land`) replaced the in-flight
+observation. The superseded command **was executed** (ACKed) — not
+cancelled. Re-check the vehicle with `mavctl status --json` and inspect
+`superseded_by_operation_id` in the error detail.
+
+## operation_not_found (exit 2, operation get)
+
+The daemon has no record of that operation id — typically after a daemon
+restart (the registry is in-memory). This does **not** mean the vehicle
+action did not happen; re-check `mavctl status --json`.
+
 ## altitude_limit / invalid_altitude (exit 5 / exit 2, takeoff)
 
 - `altitude_limit` (exit 5): target above the configured ceiling (default

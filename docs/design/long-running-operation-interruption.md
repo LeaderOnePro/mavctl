@@ -1,7 +1,11 @@
 # Design: Long-Running Operation Interruption (Issue #21)
 
-Status: **design only** — nothing in this document is implemented. Tracking
-issue: #21. Companion to `docs/design/mission-execution-phase3b.md` (§E
+Status: **v1 foundation implemented** (Phase 3B-0): the operation registry,
+epoch fencing, supersession, and the non-blocking passive wait for
+`takeoff`/`land`/`rtl` are implemented; `mode --wait` is not migrated yet;
+`operation get` is implemented (read-only) while `operation cancel` remains
+an `[OPEN]` candidate; `mission start` is not implemented. Tracking issue:
+#21 (still open — cancellation surface, ids, and conversion scope remain). Companion to `docs/design/mission-execution-phase3b.md` (§E
 analysed the same problem from the Phase 3B side; this document is the
 authoritative deep dive).
 

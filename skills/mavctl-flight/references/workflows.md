@@ -178,3 +178,21 @@ mavctl mission clear --confirm
 
 If any mission operation returns `remote_mission_state_uncertain` (exit 6),
 see troubleshooting.md — always verify with `mission download` before acting.
+
+# Long-running waits and operation observation
+
+`takeoff/land/rtl --wait` run through a daemon-side operation: the vehicle
+command is accepted first, then the milestone is observed passively —
+`rtl`/`land`/`status` stay available during the wait. A later accepted
+command supersedes an in-flight wait: the superseded command exits 6 with
+`operation_superseded` (it was ACKed — not cancelled; re-check
+`mavctl status`). If the client `--timeout` expires first, exit 6 is
+`operation_wait_timeout` with `operation_still_running: true` — observe with:
+
+```bash
+mavctl operation get <operation_id> --json
+```
+
+The daemon operation continues after a client timeout; a daemon restart
+loses the operation (re-check `mavctl status` — the vehicle action may still
+have happened).

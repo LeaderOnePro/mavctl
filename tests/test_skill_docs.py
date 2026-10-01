@@ -25,7 +25,7 @@ _DOC_FILES = (
 # Top-level commands the current CLI actually implements (mavctl --help).
 _SUPPORTED_COMMANDS = frozenset(
     {"status", "telemetry", "arm", "disarm", "mode", "takeoff", "land", "rtl",
-     "daemon", "mission"}
+     "daemon", "mission", "operation"}
 )
 
 # Unimplemented dangerous capabilities: free to *name* in plain prose ("not

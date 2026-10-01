@@ -105,6 +105,19 @@ checkout（revision `4c98c9221a`；唯一经审阅的源码修改是 `AP_FWVersi
 - mission 支持仅限 ArduPilot SITL 验证——不声明真实飞机；mission
   execution / start / AUTO 有意未包含（Phase 3B）。
 
+操作观察（0.4.0.dev0）：
+
+- `takeoff --wait`、`land --wait`、`rtl --wait` 的里程碑观察由 daemon 侧
+  operation 承载：车辆接受命令后命令锁立即释放，等待期间 `rtl` / `land` /
+  `status` 始终可用。
+- 后续被接受的命令会取代进行中的等待：被取代的命令上报 exit 6
+  `operation_superseded`——它**已被执行**（ACK），并非被取消；请用
+  `mavctl status` 重新查询车辆。
+- `--timeout` 到期上报 exit 6 `operation_wait_timeout`，且
+  `operation_still_running: true`——客户端超时不会取消已接受的车辆动作。
+- `mavctl operation get <id>` 只读观察 operation。daemon 重启后 operation
+  未知——请重新 `mavctl status`；这不代表车辆动作没有发生。
+
 0.2.1 主要变化：
 
 - `mavctl --version` 直接输出版本号——不需要 daemon 或载具。
