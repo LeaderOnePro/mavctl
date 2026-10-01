@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import math
 import signal
+import time
 from collections.abc import Awaitable, Callable
 from typing import Any, ParamSpec, TypeVar
 
@@ -22,11 +23,14 @@ from mavctl.adapter.base import (
 )
 from mavctl.daemon import guards, wire
 from mavctl.daemon.guards import GuardConfig, GuardDecision
+from mavctl.daemon.operations import OperationRegistry
 from mavctl.models import (
     CommandOutcome,
     DaemonResponse,
     ExitCode,
     MissionV1,
+    OperationKind,
+    OperationState,
     RpcRequest,
     WaitStatus,
 )
@@ -75,11 +79,17 @@ class DaemonServer:
         # state-changing command runs during a takeoff/land wait. Fast handlers
         # (ping/status/telemetry) do NOT take this lock and stay concurrent.
         self._command_lock = asyncio.Lock()
+        # Phase 3B-0: long-running operation foundation (Issue #21 design
+        # §C.2.1) — one active passive-observation operation per vehicle,
+        # epoch-fenced; in-memory only (lost on restart → uncertain).
+        self.operations = OperationRegistry()
+        self._observation_tasks: set[asyncio.Task[None]] = set()
         self._methods: dict[str, Handler] = {
             "ping": self._m_ping,
             "status": self._m_status,
             "telemetry": self._m_telemetry,
             "shutdown": self._m_shutdown,
+            "operation_get": self._m_operation_get,
             "mission_upload": self._m_mission_upload,
             "mission_download": self._m_mission_download,
             "mission_clear": self._m_mission_clear,
@@ -436,13 +446,33 @@ class DaemonServer:
             outcome = await self._blocking(self._adapter.takeoff, alt)
             if not outcome.accepted:
                 return self._command_result("takeoff", outcome)
-            target = alt * _TAKEOFF_REACHED_FRACTION
-            status = await self._maybe_wait(
-                p, lambda: self._reached_altitude(target), timeout=wait_timeout
+            # Command-lock checkpoint (Issue #21 design §C.2.1-C): the
+            # accepted ACK atomically registers the operation as the active
+            # observation owner. This is the LAST thing under the lock —
+            # passive observation runs outside it so RTL/land stay available.
+            operation = self.operations.activate(
+                OperationKind.TAKEOFF,
+                effect_sent_monotonic=time.monotonic(),
+                ack_monotonic=time.monotonic(),
             )
-            return self._finish_wait(
-                "takeoff", outcome, status, wait_timeout, f"altitude {target:.1f}m not reached"
+
+        target = alt * _TAKEOFF_REACHED_FRACTION
+        if _flag(p, "wait"):
+            await self._observe_operation(
+                operation, lambda: self._reached_altitude(target), timeout=wait_timeout
             )
+            # Client deadline hit (or milestone reached): keep observing in
+            # the background so `operation get` stays truthful — the client
+            # timeout did not cancel the accepted vehicle action.
+            self._spawn_operation_watch(operation, lambda: self._reached_altitude(target))
+            return self._finish_operation_wait(
+                "takeoff", outcome, operation, wait_timeout,
+                f"altitude {target:.1f}m not reached",
+            )
+        self._spawn_operation_watch(operation, lambda: self._reached_altitude(target))
+        return self._command_result(
+            "takeoff", outcome, operation_id=operation.operation_id
+        )
 
     async def _m_land(self, request: RpcRequest) -> DaemonResponse:
         return await self._m_descent(request, "land", self._adapter.land)
@@ -473,12 +503,34 @@ class DaemonServer:
             outcome = await self._blocking(verb)
             if not outcome.accepted:
                 return self._command_result(action, outcome)
-            status = await self._maybe_wait(
-                p, lambda: self._adapter.get_state().armed is False, timeout=wait_timeout
+            # Command-lock checkpoint (Issue #21 design §C.2.1-C): mirror of
+            # the takeoff migration — the accepted ACK activates the
+            # operation as the LAST act under the lock; disarm observation
+            # runs outside it so other commands stay available.
+            operation = self.operations.activate(
+                OperationKind(action),
+                effect_sent_monotonic=time.monotonic(),
+                ack_monotonic=time.monotonic(),
             )
-            return self._finish_wait(
-                action, outcome, status, wait_timeout, "vehicle did not disarm"
+
+        if _flag(p, "wait"):
+            await self._observe_operation(
+                operation,
+                lambda: self._adapter.get_state().armed is False,
+                timeout=wait_timeout,
             )
+            self._spawn_operation_watch(
+                operation, lambda: self._adapter.get_state().armed is False
+            )
+            return self._finish_operation_wait(
+                action, outcome, operation, wait_timeout, "vehicle did not disarm"
+            )
+        self._spawn_operation_watch(
+            operation, lambda: self._adapter.get_state().armed is False
+        )
+        return self._command_result(
+            action, outcome, operation_id=operation.operation_id
+        )
 
     # -- helpers -----------------------------------------------------------
 
@@ -574,6 +626,7 @@ class DaemonServer:
         *,
         note: str | None = None,
         waited: bool | None = None,
+        operation_id: str | None = None,
     ) -> DaemonResponse:
         if not outcome.accepted:
             return DaemonResponse.failure(
@@ -590,6 +643,8 @@ class DaemonServer:
             result["note"] = note
         if waited is not None:
             result["waited"] = waited
+        if operation_id is not None:
+            result["operation_id"] = operation_id
         return DaemonResponse.success(result)
 
     async def _maybe_wait(
@@ -649,6 +704,174 @@ class DaemonServer:
     def _reached_altitude(self, target: float) -> bool:
         rel = self._adapter.get_telemetry().position.relative_alt_m
         return rel is not None and rel >= target
+
+    async def _observe_operation(
+        self,
+        operation: Any,
+        predicate: Callable[[], bool],
+        *,
+        timeout: float,
+    ) -> None:
+        """Passive milestone observation OUTSIDE `_command_lock`.
+
+        Updates the registry state (fenced by operation_id + epoch per
+        Issue #21 design §C.2.1-E): link loss → LINK_LOST, predicate →
+        REACHED, deadline → TIMED_OUT with the operation left WAITING
+        (client timeout ≠ vehicle command cancelled; observation continues
+        in the background). If the operation was superseded mid-wait the
+        fenced writes are no-ops and the loop simply ends.
+        """
+
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        while loop.time() < deadline:
+            if operation.state is not OperationState.WAITING:
+                # superseded by another accepted command (§C.2.1-D): stop
+                # observing immediately; the fenced writes are no-ops anyway.
+                return
+            if not self._adapter.get_state().connected:
+                self.operations.record_link_lost(
+                    operation.operation_id, operation.epoch
+                )
+                return
+            if predicate():
+                self.operations.record_reached(
+                    operation.operation_id, operation.epoch
+                )
+                return
+            await asyncio.sleep(_WAIT_POLL_INTERVAL)
+        if operation.state is not OperationState.WAITING:
+            return
+        if self._adapter.get_state().connected and predicate():
+            self.operations.record_reached(operation.operation_id, operation.epoch)
+            return
+        if not self._adapter.get_state().connected:
+            self.operations.record_link_lost(operation.operation_id, operation.epoch)
+            return
+        self.operations.record_timed_out(operation.operation_id, operation.epoch)
+
+    def _spawn_operation_watch(
+        self,
+        operation: Any,
+        predicate: Callable[[], bool],
+    ) -> None:
+        """Background continuation after a client timeout / no-wait return:
+        observe until a terminal state so `operation get` stays truthful."""
+
+        async def _watch() -> None:
+            while operation.state is OperationState.WAITING:
+                if not self._adapter.get_state().connected:
+                    self.operations.record_link_lost(
+                        operation.operation_id, operation.epoch
+                    )
+                    return
+                if predicate():
+                    self.operations.record_reached(
+                        operation.operation_id, operation.epoch
+                    )
+                    return
+                await asyncio.sleep(_WAIT_POLL_INTERVAL)
+
+        task = asyncio.create_task(_watch())
+        self._observation_tasks.add(task)
+        task.add_done_callback(self._observation_tasks.discard)
+
+    def _finish_operation_wait(
+        self,
+        action: str,
+        outcome: CommandOutcome,
+        operation: Any,
+        timeout: float,
+        timeout_detail: str,
+    ) -> DaemonResponse:
+        """Map a fenced operation outcome to the response / exit-code contract.
+
+        Honest semantics (Issue #21 design §E/§G): a superseded operation
+        never claims the earlier vehicle command was cancelled; a client
+        timeout never claims the vehicle action was cancelled either — the
+        operation keeps running and is queryable via `operation get`.
+        """
+
+        if operation.state is OperationState.REACHED:
+            return self._command_result(
+                action, outcome, waited=True, operation_id=operation.operation_id
+            )
+        if operation.state is OperationState.SUPERSEDED:
+            return DaemonResponse.failure(
+                ExitCode.NACK_TIMEOUT,
+                f"{action} was accepted by the vehicle but superseded by "
+                f"operation {operation.superseded_by_operation_id}: "
+                "vehicle state must be re-queried",
+                {
+                    "reason": "operation_superseded",
+                    "operation_id": operation.operation_id,
+                    "superseded_by_operation_id":
+                        operation.superseded_by_operation_id,
+                    "hint": "re-check the vehicle with 'mavctl status'; "
+                    "the superseded command was not cancelled",
+                    "outcome": outcome.model_dump(),
+                },
+            )
+        if operation.state is OperationState.LINK_LOST:
+            return DaemonResponse.failure(
+                ExitCode.VEHICLE_NOT_CONNECTED,
+                f"{action} was accepted by the vehicle but the link was lost "
+                "during --wait",
+                {
+                    "reason": "link_lost_during_wait",
+                    "operation_id": operation.operation_id,
+                    "outcome": outcome.model_dump(),
+                },
+            )
+        if operation.state is OperationState.UNCERTAIN:
+            return DaemonResponse.failure(
+                ExitCode.NACK_TIMEOUT,
+                f"{action} accepted but the vehicle state could not be "
+                "established",
+                {
+                    "reason": "operation_uncertain",
+                    "operation_id": operation.operation_id,
+                    "outcome": outcome.model_dump(),
+                },
+            )
+        # TIMED_OUT / still WAITING after the client's deadline: the daemon
+        # operation continues observing in the background.
+        return DaemonResponse.failure(
+            ExitCode.NACK_TIMEOUT,
+            f"{action} accepted but did not complete within {timeout:.0f}s: "
+            f"{timeout_detail}",
+            {
+                "reason": "operation_wait_timeout",
+                "operation_still_running": True,
+                "operation_id": operation.operation_id,
+                "hint": "query 'mavctl operation get <id>'; the accepted "
+                "vehicle action is not cancelled by this timeout",
+                "outcome": outcome.model_dump(),
+            },
+        )
+
+    async def _m_operation_get(self, request: RpcRequest) -> DaemonResponse:
+        """Read-only operation observation (never takes the command lock)."""
+
+        operation_id = request.params.get("operation_id")
+        snapshot = (
+            self.operations.snapshot(str(operation_id))
+            if operation_id
+            else None
+        )
+        if snapshot is None:
+            return DaemonResponse.failure(
+                ExitCode.USAGE_ERROR,
+                f"operation not found: {operation_id}",
+                {
+                    "reason": "operation_not_found",
+                    "operation_id": str(operation_id) if operation_id else None,
+                    "hint": "the daemon may have restarted; re-query "
+                    "'mavctl status' — this does not mean the vehicle "
+                    "action did not happen",
+                },
+            )
+        return DaemonResponse.success({"operation": snapshot.model_dump()})
 
     # -- teardown ----------------------------------------------------------
 
