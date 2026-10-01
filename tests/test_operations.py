@@ -7,7 +7,10 @@ in tests/test_operation_server.py and tests/test_cli.py.
 
 from __future__ import annotations
 
-from mavctl.daemon.operations import OperationRegistry
+from mavctl.daemon.operations import (
+    MAX_RETAINED_TERMINAL_OPERATIONS,
+    OperationRegistry,
+)
 from mavctl.models.operation import (
     OperationKind,
     OperationState,
@@ -198,3 +201,71 @@ def test_snapshot_exposes_safe_fields_only() -> None:
         "terminal_reason",
     }
     assert "epoch" not in data  # internal generation never crosses the RPC boundary
+
+# -- bounded retention (P2) -----------------------------------------------------
+
+
+def test_retention_constant_is_256() -> None:
+    from mavctl.daemon import operations as operations_module
+
+    assert operations_module.MAX_RETAINED_TERMINAL_OPERATIONS == 256
+
+
+def test_retention_evicts_oldest_terminal_keeps_active_and_newest() -> None:
+    registry = OperationRegistry()
+    total = MAX_RETAINED_TERMINAL_OPERATIONS + 20
+    ids: list[str] = []
+    for i in range(total):
+        operation_id, _epoch, _ = _activate(
+            registry, OperationKind.TAKEOFF, base=100.0 + i
+        )
+        ids.append(operation_id)
+
+    # every activation supersedes the previous one (each becomes terminal),
+    # so the last activation is the active owner.
+    active = registry.active()
+    assert active is not None
+    assert active.operation_id == ids[-1]
+
+    # the oldest terminal operations are evicted; the newest are retained
+    assert registry.get(ids[0]) is None  # oldest terminal evicted
+    assert registry.get(ids[1]) is None
+    assert registry.get(ids[-2]) is not None  # newest terminal retained
+    assert registry.get(ids[-1]) is not None  # active owner retained
+
+    # retention accounting: retained = 1 active + 256 terminal
+    retained = sum(1 for op_id in ids if registry.get(op_id) is not None)
+    assert retained == MAX_RETAINED_TERMINAL_OPERATIONS + 1
+
+
+def test_retained_operations_keep_terminal_evidence() -> None:
+    registry = OperationRegistry()
+    ids: list[str] = []
+    for i in range(MAX_RETAINED_TERMINAL_OPERATIONS + 5):
+        operation_id, _epoch, _ = _activate(
+            registry, OperationKind.TAKEOFF, base=100.0 + i
+        )
+        ids.append(operation_id)
+
+    newest_terminal = registry.get(ids[-2])  # ids[-1] is the active owner
+    assert newest_terminal is not None
+    assert newest_terminal.state is OperationState.SUPERSEDED
+    assert newest_terminal.superseded_by_operation_id == ids[-1]
+
+
+def test_evicted_id_fencing_is_still_safe() -> None:
+    """An evicted id's stale waiter is fenced: record_* returns False and
+    nothing resurrects the evicted record."""
+
+    registry = OperationRegistry()
+    first_id, first_epoch, _ = _activate(registry)
+    for i in range(MAX_RETAINED_TERMINAL_OPERATIONS + 10):
+        _activate(registry, OperationKind.TAKEOFF, base=100.0 + i)
+
+    assert registry.get(first_id) is None
+    assert registry.record_reached(first_id, first_epoch) is False
+    assert registry.record_link_lost(first_id, first_epoch) is False
+    assert registry.record_uncertain(
+        first_id, first_epoch, reason="operation_observation_failed"
+    ) is False
+    assert registry.get(first_id) is None

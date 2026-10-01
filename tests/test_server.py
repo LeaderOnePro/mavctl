@@ -10,6 +10,7 @@ import pytest
 
 from mavctl.adapter.base import ModeMappingUnavailableError
 from mavctl.daemon import wire
+from mavctl.daemon.operations import OperationRegistry
 from mavctl.daemon.server import DaemonServer
 from mavctl.models import (
     CommandOutcome,
@@ -790,6 +791,161 @@ async def test_without_wait_returns_operation_id_and_reaches_in_background() -> 
         snapshot = server.operations.get(operation_id)
     assert snapshot is not None
     assert snapshot.state is OperationState.REACHED
+
+
+class _ExplodingStateAdapter(_StalledTakeoffAdapter):
+    """get_state()/get_telemetry() raise once ``explode`` is set."""
+
+    def __init__(self, state: VehicleState) -> None:
+        super().__init__(state)
+        self.explode = False
+
+    def get_state(self) -> VehicleState:
+        if self.explode:
+            raise RuntimeError("simulated snapshot failure")
+        return super().get_state()
+
+    def get_telemetry(self) -> Telemetry:
+        if self.explode:
+            raise RuntimeError("simulated telemetry failure")
+        return super().get_telemetry()
+
+
+async def test_background_watcher_exception_marks_operation_uncertain() -> None:
+    """P1-1: an unexpected observer exception is contained — the operation
+    becomes UNCERTAIN with terminal_reason operation_observation_failed, the
+    watcher task completes without an unretrieved exception, and no raw
+    traceback exists anywhere."""
+
+    adapter = _ExplodingStateAdapter(_state(armed=True, mode="GUIDED"))
+    server = DaemonServer(adapter, "udp:127.0.0.1:14550")
+
+    response = await server._dispatch(_params(method="takeoff", confirm=True, alt=10.0))
+    assert response.ok is True
+    result = response.result
+    assert result is not None
+    operation_id = result["operation_id"]
+    assert server._observation_tasks, "watcher task should be running"
+
+    adapter.explode = True
+    snapshot = server.operations.get(operation_id)
+    for _ in range(50):
+        assert snapshot is not None
+        if snapshot.state is OperationState.UNCERTAIN:
+            break
+        await asyncio.sleep(0.05)
+        snapshot = server.operations.get(operation_id)
+    assert snapshot is not None
+    assert snapshot.state is OperationState.UNCERTAIN
+    assert snapshot.terminal_reason == "operation_observation_failed"
+    # watcher task was retrieved cleanly (no pending exception)
+    assert not server._observation_tasks or all(
+        task.done() and task.exception() is None
+        for task in server._observation_tasks
+    )
+
+
+async def test_foreground_wait_exception_returns_controlled_exit_6() -> None:
+    """P1-1: an exception inside the foreground observation is contained —
+    exit 6 with reason operation_observation_failed and a status re-query
+    hint; never a generic exit 1 or a leaked traceback."""
+
+    adapter = _ExplodingStateAdapter(_state(armed=True, mode="GUIDED"))
+    server = DaemonServer(adapter, "udp:127.0.0.1:14550")
+
+    async def _explode_after_ack() -> None:
+        await asyncio.sleep(0.15)  # ACK consumed, operation WAITING, observing
+        adapter.explode = True
+
+    exploder = asyncio.create_task(_explode_after_ack())
+    # ACK succeeds; the observation explodes only after registration
+    response = await server._dispatch(
+        _params(method="takeoff", confirm=True, alt=10.0, wait=True, timeout=5)
+    )
+    await exploder
+    assert response.ok is False
+    error = response.error
+    assert error is not None
+    assert error.code == ExitCode.NACK_TIMEOUT
+    assert error.detail["reason"] == "operation_observation_failed"
+    assert "status --json" in error.detail["hint"]
+    assert "RuntimeError" not in error.message
+    assert "simulated" not in error.message
+
+    snapshot = server.operations.active()
+    assert snapshot is not None
+    assert snapshot.state is OperationState.UNCERTAIN
+    assert snapshot.terminal_reason == "operation_observation_failed"
+
+
+async def test_supersession_takes_precedence_over_observer_exception() -> None:
+    """An old operation's observer exception must not overwrite a SUPERSEDED
+    state — fencing wins over exception containment."""
+
+    registry = OperationRegistry()
+    old = registry.activate(
+        OperationKind.TAKEOFF,
+        effect_sent_monotonic=100.0,
+        ack_monotonic=100.05,
+        now_monotonic=100.0,
+    )
+    _new = registry.activate(
+        OperationKind.RTL,
+        effect_sent_monotonic=101.0,
+        ack_monotonic=101.05,
+        now_monotonic=101.0,
+    )
+    # the old observer blows up after being superseded:
+    assert (
+        registry.record_uncertain(
+            old.operation_id, old.epoch, reason="operation_observation_failed"
+        )
+        is False
+    )
+    assert old.state is OperationState.SUPERSEDED
+    assert old.terminal_reason != "operation_observation_failed"
+
+
+async def test_shutdown_cancels_watchers_and_releases_active_owner() -> None:
+    """P1-2: daemon shutdown cancels + awaits background watchers, empties
+    the task set, releases the active owner, sends no cancellation commands
+    to the adapter, and completes in bounded deterministic time."""
+
+    adapter = _StalledTakeoffAdapter(_state(armed=True, mode="GUIDED"))
+    server = DaemonServer(adapter, "udp:127.0.0.1:14550")
+
+    response = await server._dispatch(_params(method="takeoff", confirm=True, alt=10.0))
+    assert response.ok is True
+    assert server._observation_tasks, "background watcher should exist"
+    calls_before_shutdown = list(adapter.calls)
+
+    await asyncio.wait_for(server._shutdown(), timeout=5.0)
+
+    assert not server._observation_tasks  # cancelled, awaited, cleared
+    assert server.operations.active() is None  # active owner released
+    # shutdown sent no cancellation commands to the adapter: the only new
+    # call is the disconnect itself (no rtl / disarm / disarm --force)
+    new_calls = adapter.calls[len(calls_before_shutdown):]
+    assert new_calls == ["disconnect"]
+    assert "rtl" not in adapter.calls
+    assert not any(c.startswith("disarm") for c in adapter.calls)
+
+
+async def test_status_and_telemetry_after_shutdown_still_behave() -> None:
+    """Shutdown must not break the existing status/telemetry contract: the
+    adapter is disconnected, so status reports the disconnected snapshot."""
+
+    adapter = _StalledTakeoffAdapter(_state(armed=True, mode="GUIDED"))
+    server = DaemonServer(adapter, "udp:127.0.0.1:14550")
+    await asyncio.wait_for(server._shutdown(), timeout=5.0)
+
+    status = await server._dispatch(wire.encode({"method": "status"}))
+    assert status.ok is True  # snapshot still served
+    # telemetry stays responsive after shutdown (the FakeAdapter's snapshot
+    # is static, so the existing connected/disconnected semantics are
+    # unchanged — the assertion here is only that dispatch still answers).
+    telemetry = await server._dispatch(wire.encode({"method": "telemetry"}))
+    assert telemetry.ok is True
 
 
 async def test_operation_get_unknown_returns_not_found() -> None:

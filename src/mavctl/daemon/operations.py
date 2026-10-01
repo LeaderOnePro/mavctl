@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import time
 import uuid
+from collections import deque
 
 from mavctl.models.operation import (
     TERMINAL_OPERATION_STATES,
@@ -33,6 +34,12 @@ from mavctl.models.operation import (
 )
 
 _TERMINAL_REASON_SUPERSEDED = "superseded by a newer accepted command"
+
+# Bounded v1 retention: the registry keeps the current active owner plus the
+# most recent terminal operations (FIFO by completion order). Evicted ids
+# answer `operation not found` — that never implies the vehicle action did
+# not happen.
+MAX_RETAINED_TERMINAL_OPERATIONS = 256
 
 
 class Operation:
@@ -93,6 +100,9 @@ class OperationRegistry:
         self._active: Operation | None = None
         self._operations: dict[str, Operation] = {}
         self._last_epoch = 0
+        # terminal operations in completion order (oldest first), for bounded
+        # retention eviction; the active owner is never part of this queue.
+        self._terminal_order: deque[str] = deque()
 
     # -- registration ------------------------------------------------------
 
@@ -127,11 +137,49 @@ class OperationRegistry:
             previous.state = OperationState.SUPERSEDED
             previous.superseded_by_operation_id = operation.operation_id
             previous.terminal_reason = _TERMINAL_REASON_SUPERSEDED
+            self._mark_terminal(previous)
 
         self._active = operation
         self._operations[operation.operation_id] = operation
         self._last_epoch = operation.epoch
         return operation
+
+    # -- terminal bookkeeping ----------------------------------------------
+
+    def _mark_terminal(self, operation: Operation) -> None:
+        """Record that ``operation`` reached a terminal state and apply the
+        bounded-retention policy: never evict the active owner; evict the
+        oldest terminal operation beyond
+        :data:`MAX_RETAINED_TERMINAL_OPERATIONS`."""
+
+        self._terminal_order.append(operation.operation_id)
+        while len(self._terminal_order) > MAX_RETAINED_TERMINAL_OPERATIONS:
+            oldest_id = self._terminal_order.popleft()
+            if oldest_id == operation.operation_id:
+                break  # never evict the operation that just turned terminal
+            oldest = self._operations.get(oldest_id)
+            if oldest is not None and oldest is not self._active:
+                del self._operations[oldest_id]
+
+    def record_uncertain(
+        self, operation_id: str, epoch: int, *, reason: str
+    ) -> bool:
+        """Mark a still-active operation as ``uncertain`` (fenced).
+
+        Used by observers when an unexpected observation failure means the
+        vehicle effect/state cannot be established. Never overwrites a
+        terminal state (e.g. ``superseded``) — fenced like every write.
+        """
+
+        if not self.is_active(operation_id, epoch):
+            return False
+        operation = self._operations[operation_id]
+        if operation.state is not OperationState.WAITING:
+            return False
+        operation.state = OperationState.UNCERTAIN
+        operation.terminal_reason = reason
+        self._mark_terminal(operation)
+        return True
 
     # -- fencing -----------------------------------------------------------
 
@@ -159,6 +207,7 @@ class OperationRegistry:
         if operation.state is OperationState.WAITING:
             operation.state = OperationState.REACHED
             operation.terminal_reason = "milestone reached"
+            self._mark_terminal(operation)
             return True
         return False
 
@@ -171,6 +220,7 @@ class OperationRegistry:
         if operation.state is OperationState.WAITING:
             operation.state = OperationState.LINK_LOST
             operation.terminal_reason = "heartbeat lost during wait"
+            self._mark_terminal(operation)
             return True
         return False
 
@@ -189,6 +239,18 @@ class OperationRegistry:
             )
             return True
         return False
+
+    # -- shutdown ------------------------------------------------------------
+
+    def release_active(self) -> None:
+        """Drop the active-owner pointer at daemon shutdown.
+
+        The registry is in-memory: after shutdown (or restart) a new daemon
+        answers `operation get` for any id with `operation_not_found`, per
+        the documented restart semantics. This does not touch the vehicle.
+        """
+
+        self._active = None
 
     # -- lookup -------------------------------------------------------------
 

@@ -724,42 +724,13 @@ class DaemonServer:
 
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
-        while loop.time() < deadline:
-            if operation.state is not OperationState.WAITING:
-                # superseded by another accepted command (§C.2.1-D): stop
-                # observing immediately; the fenced writes are no-ops anyway.
-                return
-            if not self._adapter.get_state().connected:
-                self.operations.record_link_lost(
-                    operation.operation_id, operation.epoch
-                )
-                return
-            if predicate():
-                self.operations.record_reached(
-                    operation.operation_id, operation.epoch
-                )
-                return
-            await asyncio.sleep(_WAIT_POLL_INTERVAL)
-        if operation.state is not OperationState.WAITING:
-            return
-        if self._adapter.get_state().connected and predicate():
-            self.operations.record_reached(operation.operation_id, operation.epoch)
-            return
-        if not self._adapter.get_state().connected:
-            self.operations.record_link_lost(operation.operation_id, operation.epoch)
-            return
-        self.operations.record_timed_out(operation.operation_id, operation.epoch)
-
-    def _spawn_operation_watch(
-        self,
-        operation: Any,
-        predicate: Callable[[], bool],
-    ) -> None:
-        """Background continuation after a client timeout / no-wait return:
-        observe until a terminal state so `operation get` stays truthful."""
-
-        async def _watch() -> None:
-            while operation.state is OperationState.WAITING:
+        try:
+            while loop.time() < deadline:
+                if operation.state is not OperationState.WAITING:
+                    # superseded by another accepted command (§C.2.1-D): stop
+                    # observing immediately; the fenced writes are no-ops
+                    # anyway.
+                    return
                 if not self._adapter.get_state().connected:
                     self.operations.record_link_lost(
                         operation.operation_id, operation.epoch
@@ -771,6 +742,58 @@ class DaemonServer:
                     )
                     return
                 await asyncio.sleep(_WAIT_POLL_INTERVAL)
+            if operation.state is not OperationState.WAITING:
+                return
+            if self._adapter.get_state().connected and predicate():
+                self.operations.record_reached(operation.operation_id, operation.epoch)
+                return
+            if not self._adapter.get_state().connected:
+                self.operations.record_link_lost(operation.operation_id, operation.epoch)
+                return
+            self.operations.record_timed_out(operation.operation_id, operation.epoch)
+        except Exception:
+            # Known observation failure (e.g. adapter snapshot exploded): the
+            # operation must not stay WAITING and the failure must not leak a
+            # traceback to the client — it becomes a controlled UNCERTAIN
+            # terminal state. Cancellation (daemon shutdown) is a
+            # BaseException and passes through untouched.
+            self.operations.record_uncertain(
+                operation.operation_id,
+                operation.epoch,
+                reason="operation_observation_failed",
+            )
+
+    def _spawn_operation_watch(
+        self,
+        operation: Any,
+        predicate: Callable[[], bool],
+    ) -> None:
+        """Background continuation after a client timeout / no-wait return:
+        observe until a terminal state so `operation get` stays truthful."""
+
+        async def _watch() -> None:
+            try:
+                while operation.state is OperationState.WAITING:
+                    if not self._adapter.get_state().connected:
+                        self.operations.record_link_lost(
+                            operation.operation_id, operation.epoch
+                        )
+                        return
+                    if predicate():
+                        self.operations.record_reached(
+                            operation.operation_id, operation.epoch
+                        )
+                        return
+                    await asyncio.sleep(_WAIT_POLL_INTERVAL)
+            except Exception:
+                # Known observation failure: contain it in the operation (see
+                # _observe_operation). Cancellation (daemon shutdown) passes
+                # through as a BaseException.
+                self.operations.record_uncertain(
+                    operation.operation_id,
+                    operation.epoch,
+                    reason="operation_observation_failed",
+                )
 
         task = asyncio.create_task(_watch())
         self._observation_tasks.add(task)
@@ -824,13 +847,19 @@ class DaemonServer:
                 },
             )
         if operation.state is OperationState.UNCERTAIN:
+            reason = (
+                "operation_observation_failed"
+                if operation.terminal_reason == "operation_observation_failed"
+                else "operation_uncertain"
+            )
             return DaemonResponse.failure(
                 ExitCode.NACK_TIMEOUT,
                 f"{action} accepted but the vehicle state could not be "
                 "established",
                 {
-                    "reason": "operation_uncertain",
+                    "reason": reason,
                     "operation_id": operation.operation_id,
+                    "hint": "re-check the vehicle with 'mavctl status --json'",
                     "outcome": outcome.model_dump(),
                 },
             )
@@ -882,11 +911,26 @@ class DaemonServer:
                 loop.add_signal_handler(sig, self.request_stop)
 
     async def _shutdown(self) -> None:
+        # 1. stop accepting new connections
         if self._server is not None:
             self._server.close()
             with contextlib.suppress(Exception):
                 await self._server.wait_closed()
             self._server = None
+        # 2. cancel + await local background observers (daemon-local shutdown
+        #    only: this never cancels or retracts a vehicle action, and sends
+        #    nothing to the vehicle). Cancellation is a BaseException, so the
+        #    watchers' exception containment does not misreport it.
+        watchers = [t for t in self._observation_tasks if not t.done()]
+        for task in watchers:
+            task.cancel()
+        if watchers:
+            await asyncio.gather(*watchers, return_exceptions=True)
+        self._observation_tasks.clear()
+        # 3. release the active owner (registry is in-memory; after shutdown
+        #    a new daemon answers operation get with operation_not_found)
+        self.operations.release_active()
+        # 4. disconnect the link and clean the socket last
         self._adapter.disconnect()
         with contextlib.suppress(FileNotFoundError):
             socket_path().unlink()
