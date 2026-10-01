@@ -35,6 +35,11 @@ mission_app = typer.Typer(
     no_args_is_help=True,
 )
 app.add_typer(mission_app, name="mission")
+operation_app = typer.Typer(
+    help="Read-only observation of long-running operations.",
+    no_args_is_help=True,
+)
+app.add_typer(operation_app, name="operation")
 
 
 def _version_callback(value: bool) -> None:
@@ -520,6 +525,50 @@ def mission_clear(
         timeout=_COMMAND_BASE_TIMEOUT,
     )
     emit_success(result, json_mode=json_mode, human=_format_mission_action(result))
+
+
+# -- operation observation (Phase 3B-0; read-only) --------------------------
+
+
+@operation_app.command("get")
+def operation_get(
+    operation_id: Annotated[
+        str, typer.Argument(help="Operation id from a --wait command outcome.")
+    ],
+    json_mode: JsonOption = False,
+) -> None:
+    """Observe a long-running operation (read-only; never blocks).
+
+    If the daemon has restarted, the operation is unknown — that does NOT
+    mean the vehicle action did not happen; re-check with 'mavctl status'.
+    """
+
+    result = _call(
+        "operation_get",
+        json_mode,
+        {"operation_id": operation_id},
+        timeout=_QUERY_TIMEOUT,
+    )
+    operation = result.get("operation") or {}
+    emit_success(
+        result,
+        json_mode=json_mode,
+        human=(
+            f"{operation.get('id', operation_id)}  {operation.get('kind', '?')}  "
+            f"state={operation.get('state', '?')}  "
+            f"created {_fmt_age(operation.get('created_age_s'))} ago"
+            + (
+                f"  superseded by {operation['superseded_by_operation_id']}"
+                if operation.get("superseded_by_operation_id")
+                else ""
+            )
+            + (
+                f"  ({operation['terminal_reason']})"
+                if operation.get("terminal_reason")
+                else ""
+            )
+        ),
+    )
 
 
 # -- human formatters ------------------------------------------------------
