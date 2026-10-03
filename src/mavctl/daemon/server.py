@@ -90,6 +90,7 @@ class DaemonServer:
             "telemetry": self._m_telemetry,
             "shutdown": self._m_shutdown,
             "operation_get": self._m_operation_get,
+            "mission_start": self._m_mission_start,
             "mission_upload": self._m_mission_upload,
             "mission_download": self._m_mission_download,
             "mission_clear": self._m_mission_clear,
@@ -877,6 +878,99 @@ class DaemonServer:
                 "vehicle action is not cancelled by this timeout",
                 "outcome": outcome.model_dump(),
             },
+        )
+
+    async def _m_mission_start(self, request: RpcRequest) -> DaemonResponse:
+        """Start or resume the stored mission (Phase 3B-1).
+
+        Flow (Issue #21 design §C.2.1-C checkpoint): guard + count probe +
+        effecting command + operation activation all under `_command_lock`;
+        passive milestone observation (mission ACTIVE + mode AUTO) runs
+        outside the lock, fenced by operation_id + epoch.
+        """
+
+        p = request.params
+        try:
+            wait_timeout = _wait_timeout(p)
+        except ValueError as exc:
+            return self._invalid_timeout(exc)
+        async with self._command_lock:
+            state = self._adapter.get_state()
+            if not state.connected:
+                return self._not_connected()
+
+            # Vehicle-verified mission count: this is the guard's
+            # "mission exists" evidence (a stale cache or inference from
+            # AUTO/position would be fabricable).
+            try:
+                mission_count = await self._blocking_mission(
+                    self._adapter.get_mission_count
+                )
+            except MissionProtocolError as exc:
+                return DaemonResponse.failure(
+                    ExitCode.SAFETY_REJECTED,
+                    f"refusing to mission_start: the mission count could "
+                    f"not be verified ({exc.result_name})",
+                    {
+                        "reason": "mission_count_unverified",
+                        "result_name": exc.result_name,
+                        "hint": "verify the stored mission with "
+                        "'mavctl mission download', then retry",
+                    },
+                )
+
+            decision = guards.check_mission_start(
+                state,
+                mission_count=mission_count,
+                confirm=_flag(p, "confirm"),
+                config=self._guard_config,
+            )
+            pre = self._pre_execute(decision, dry_run=_flag(p, "dry_run"))
+            if pre is not None:
+                return pre
+            if decision.already_satisfied:
+                return DaemonResponse.success(
+                    {
+                        "action": "mission_start",
+                        "executed": False,
+                        "already_running": True,
+                    }
+                )
+
+            outcome = await self._blocking(self._adapter.start_mission)
+            if not outcome.accepted:
+                return self._command_result("mission_start", outcome)
+            # Command-lock checkpoint (§C.2.1-C): the accepted ACK activates
+            # the operation as the LAST act under the lock.
+            operation = self.operations.activate(
+                OperationKind.MISSION_START,
+                effect_sent_monotonic=time.monotonic(),
+                ack_monotonic=time.monotonic(),
+            )
+
+        def _milestone() -> bool:
+            snapshot = self._adapter.get_state()
+            execution = snapshot.mission
+            mission_active = (
+                execution is not None and execution.state == "active"
+            )
+            mode_auto = snapshot.flight_mode == "AUTO"
+            return mission_active and mode_auto
+
+        if _flag(p, "wait"):
+            await self._observe_operation(
+                operation, _milestone, timeout=wait_timeout
+            )
+            # Client deadline hit (or milestone reached): keep observing in
+            # the background so `operation get` stays truthful.
+            self._spawn_operation_watch(operation, _milestone)
+            return self._finish_operation_wait(
+                "mission_start", outcome, operation, wait_timeout,
+                "mission execution (AUTO + mission_state ACTIVE) not observed",
+            )
+        self._spawn_operation_watch(operation, _milestone)
+        return self._command_result(
+            "mission_start", outcome, operation_id=operation.operation_id
         )
 
     async def _m_operation_get(self, request: RpcRequest) -> DaemonResponse:

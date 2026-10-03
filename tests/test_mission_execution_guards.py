@@ -43,7 +43,7 @@ def _run(
     *,
     mission_count: int = 4,
     confirm: bool = True,
-) -> "GuardDecision":
+) -> GuardDecision:
     return check_mission_start(
         state, mission_count=mission_count, confirm=confirm, config=GuardConfig()
     )
