@@ -185,6 +185,23 @@ class VehicleAdapter(Protocol):
         """
         ...
 
+    def start_mission(self) -> CommandOutcome:
+        """Start or resume the stored mission (Phase 3B-1).
+
+        Raises:
+            MissionProtocolError: the vehicle rejected the command.
+        """
+        ...
+
+    def get_mission_count(self) -> int:
+        """Vehicle-confirmed remote mission count via a controlled
+        `MISSION_REQUEST_LIST` probe.
+
+        Raises:
+            MissionProtocolError: the count could not be verified.
+        """
+        ...
+
     def clear_mission(self) -> MissionOutcome:
         """Clear the remote mission and verify the remote count is zero.
 
