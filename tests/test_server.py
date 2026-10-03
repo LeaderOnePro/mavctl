@@ -38,11 +38,12 @@ class FakeAdapter:
         state: VehicleState,
         telemetry: Telemetry | None = None,
         outcome: CommandOutcome | None = None,
+        mission_count: int = 0,
     ) -> None:
         self._state = state
         self._telemetry = telemetry or Telemetry()
         self._outcome = outcome or CommandOutcome.from_ack(0, 1)
-        self._mission_count = 0
+        self._mission_count = mission_count
         self.calls: list[str] = []
 
     def connect(self) -> None:
