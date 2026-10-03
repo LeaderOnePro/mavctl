@@ -50,7 +50,13 @@ from mavctl.models.protocol import (
     RpcError,
     RpcRequest,
 )
-from mavctl.models.state import Battery, GpsInfo, HomePosition, VehicleState
+from mavctl.models.state import (
+    Battery,
+    GpsInfo,
+    HomePosition,
+    MissionExecutionState,
+    VehicleState,
+)
 from mavctl.models.telemetry import Attitude, Position, Telemetry, Velocity
 
 __all__ = [
@@ -77,6 +83,7 @@ __all__ = [
     "ExitCode",
     "GpsInfo",
     "HomePosition",
+    "MissionExecutionState",
     "MissionItem",
     "MissionItemIntFields",
     "MissionLand",
