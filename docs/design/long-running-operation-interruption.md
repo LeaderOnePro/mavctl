@@ -1,7 +1,11 @@
 # Design: Long-Running Operation Interruption (Issue #21)
 
-Status: **design only** — nothing in this document is implemented. Tracking
-issue: #21. Companion to `docs/design/mission-execution-phase3b.md` (§E
+Status: **v1 foundation implemented** (Phase 3B-0): the operation registry,
+epoch fencing, supersession, and the non-blocking passive wait for
+`takeoff`/`land`/`rtl` are implemented; `mode --wait` is not migrated yet;
+`operation get` is implemented (read-only) while `operation cancel` remains
+an `[OPEN]` candidate; `mission start` is not implemented. Tracking issue:
+#21 (still open — cancellation surface, ids, and conversion scope remain). Companion to `docs/design/mission-execution-phase3b.md` (§E
 analysed the same problem from the Phase 3B side; this document is the
 authoritative deep dive).
 
@@ -376,6 +380,31 @@ cite a vehicle-confirmed predicate must not be reported as a vehicle
 outcome — it stays daemon-local or becomes `uncertain`; (3) `link_lost`,
 `timed_out`, `superseded`, and `uncertain` are **distinct** terminal
 reasons and are never conflated into one bucket.
+
+Additional `[DECIDED]` v1 lifecycle rules:
+
+- **Observer exception containment**: an unexpected exception inside a
+  foreground or background observer (adapter snapshot failure, predicate
+  crash) is contained — the operation transitions to `uncertain` with
+  `terminal_reason = "operation_observation_failed"`; no traceback or raw
+  exception text reaches the CLI output. Foreground `--wait` maps this to
+  exit 6 with `reason = operation_observation_failed` and a hint to
+  re-check `mavctl status --json` (never generic exit 1). Supersession
+  takes precedence: a fenced (superseded) observer's exception cannot
+  overwrite `superseded`.
+- **Daemon shutdown**: shutdown cancels and awaits all background observer
+  tasks (cancellation is a daemon-local stop — it never cancels or
+  retracts a vehicle action and sends nothing to the vehicle), releases
+  the active owner, then disconnects. After shutdown the registry is
+  unqueryable and a new daemon answers `operation get` with
+  `operation_not_found` — consistent with the restart → uncertain/lost
+  semantics.
+- **Bounded retention**: the registry keeps the active owner plus the most
+  recent `MAX_RETAINED_TERMINAL_OPERATIONS = 256` terminal operations
+  (FIFO by completion order; the active owner is never evicted). An
+  evicted id answers `operation get` with `operation_not_found` — that
+  does not imply the vehicle action did not happen. Operation ids remain
+  UUID-format; no persistence.
 
 ---
 

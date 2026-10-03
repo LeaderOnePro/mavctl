@@ -223,3 +223,10 @@ Provenance:
 
 The next development version must move forward from 0.3.0, for example
 `0.3.1.dev0` or `0.4.0.dev0`. Never re-publish an existing version number.
+
+## Development state: 0.4.0.dev0
+
+mavctl `0.4.0.dev0` is under development (`pyproject.toml` on the
+`feat/operation-foundation` branch — the Phase 3B-0 long-running operation
+foundation). It is **not** published: production releases remain 0.2.0,
+0.2.1 and 0.3.0, and no 0.4.0 release record exists yet.

@@ -329,3 +329,75 @@ def test_nack_maps_exit_6(monkeypatch: pytest.MonkeyPatch) -> None:
     )
     result = runner.invoke(app, ["arm", "--confirm"])
     assert result.exit_code == ExitCode.NACK_TIMEOUT
+
+
+# -- operation get (Phase 3B-0; read-only) ------------------------------------
+
+
+def test_operation_get_json_outputs_safe_fields(monkeypatch: pytest.MonkeyPatch) -> None:
+    payload = {
+        "operation": {
+            "id": "op-abc",
+            "kind": "takeoff",
+            "state": "waiting",
+            "created_age_s": 1.2,
+            "effect_sent_age_s": 1.1,
+            "ack_age_s": 1.0,
+            "superseded_by_operation_id": None,
+            "terminal_reason": None,
+        }
+    }
+    monkeypatch.setattr(_CALL_DAEMON, lambda *a, **k: DaemonResponse.success(payload))
+    result = runner.invoke(app, ["operation", "get", "op-abc", "--json"])
+
+    assert result.exit_code == ExitCode.SUCCESS
+    body = json.loads(result.stdout)
+    assert body["operation"]["id"] == "op-abc"
+    assert body["operation"]["state"] == "waiting"
+    assert "epoch" not in body["operation"]  # internal generation never exposed
+
+
+def test_operation_get_human_renders_state(monkeypatch: pytest.MonkeyPatch) -> None:
+    payload = {
+        "operation": {
+            "id": "op-abc",
+            "kind": "takeoff",
+            "state": "reached",
+            "created_age_s": 3.0,
+            "effect_sent_age_s": 2.9,
+            "ack_age_s": 2.8,
+            "superseded_by_operation_id": None,
+            "terminal_reason": "milestone reached",
+        }
+    }
+    monkeypatch.setattr(_CALL_DAEMON, lambda *a, **k: DaemonResponse.success(payload))
+    result = runner.invoke(app, ["operation", "get", "op-abc"])
+
+    assert result.exit_code == ExitCode.SUCCESS
+    assert "op-abc" in result.stdout
+    assert "reached" in result.stdout
+
+
+def test_operation_get_unknown_maps_exit_2(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        _CALL_DAEMON,
+        lambda *a, **k: DaemonResponse.failure(
+            ExitCode.USAGE_ERROR,
+            "operation not found: op-missing",
+            {"reason": "operation_not_found", "operation_id": "op-missing"},
+        ),
+    )
+    result = runner.invoke(app, ["operation", "get", "op-missing", "--json"])
+
+    assert result.exit_code == ExitCode.USAGE_ERROR
+    body = json.loads(result.stderr)
+    assert body["error"]["detail"]["reason"] == "operation_not_found"
+
+
+def test_operation_get_daemon_down_maps_exit_3(monkeypatch: pytest.MonkeyPatch) -> None:
+    def boom(*_args: object, **_kwargs: object) -> DaemonResponse:
+        raise DaemonNotRunningError("no socket")
+
+    monkeypatch.setattr(_CALL_DAEMON, boom)
+    result = runner.invoke(app, ["operation", "get", "op-abc"])
+    assert result.exit_code == ExitCode.DAEMON_NOT_RUNNING

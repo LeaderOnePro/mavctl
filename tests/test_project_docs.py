@@ -22,7 +22,7 @@ _SKILLS_ACCEPTANCE = (_ROOT / "docs" / "SKILLS_CLI_ACCEPTANCE.md").read_text(enc
 
 _SUPPORTED_COMMANDS = frozenset(
     {"status", "telemetry", "arm", "disarm", "mode", "takeoff", "land", "rtl",
-     "daemon", "mission"}
+     "daemon", "mission", "operation"}
 )
 
 _MAVCTL_INVOCATION = re.compile(r"mavctl\s+([A-Za-z][A-Za-z0-9_-]*)")
@@ -292,10 +292,11 @@ def test_pyproject_packaging_metadata_is_release_ready_shape() -> None:
     assert metadata_line(r'^name = "mavctl"$')
     assert metadata_line(r'^readme = "README\.md"$')
     assert metadata_line(r'^license = "MIT"$')
-    # The release version promoted on the release branch. Published
-    # production releases: 0.2.0, 0.2.1 and 0.3.0 (see the claim test above);
-    # the next dev version moves forward per the 0.3.0 release record.
-    assert metadata_line(r'^version = "0\.3\.0"$')
+    # The current development version (PEP 440 dev suffix); the release
+    # version is promoted on a release branch before tagging. Published
+    # production releases: 0.2.0, 0.2.1 and 0.3.0 (see the claim test
+    # above).
+    assert metadata_line(r'^version = "0\.4\.0\.dev0"$')
     assert metadata_line(r'^mavctl = "[^"]+"$')
     license_text = (_ROOT / "LICENSE").read_text(encoding="utf-8")
     assert "MIT License" in license_text
@@ -305,11 +306,13 @@ def test_pyproject_packaging_metadata_is_release_ready_shape() -> None:
 # -- 0.2.1 release preparation ----------------------------------------------
 
 
-def test_release_branch_prepares_exact_version_030() -> None:
-    # The release branch pins the package version to exactly 0.3.0 — no dev
-    # suffix, no other version.
-    assert re.search(r'(?m)^version = "0\.3\.0"$', _PYPROJECT) is not None
-    assert "0.2.2.dev0" not in _PYPROJECT
+def test_development_version_is_040_dev0() -> None:
+    # The 0.4.0.dev0 development cycle (Phase 3B-0 operation foundation) is
+    # unreleased: no 0.4.0 publication claim anywhere, and the 0.3.0
+    # release record stays the newest one.
+    assert re.search(r'(?m)^version = "0\.4\.0\.dev0"$', _PYPROJECT) is not None
+    assert "## Production release record: 0.4.0" not in _PUBLISHING
+    assert "## Development state: 0.4.0.dev0" in _PUBLISHING
 
 
 def test_publishing_doc_records_030_production_release() -> None:

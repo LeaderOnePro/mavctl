@@ -104,6 +104,17 @@ system 254, `--source-system` on `daemon start`) so it does not share an
 on-wire identity with the GCS it was validated against (MAVProxy 1.8.74,
 default 255/230); mission transfers stay bound to mavctl's identity.
 
+`takeoff/land/rtl --wait` observation is daemon-side and non-blocking: the
+command lock is released once the vehicle accepts the command, so safety
+actions (`rtl`, `land`, `disarm --force`) stay available during a wait. A
+superseded wait means the observation moved on — the superseded command
+**was executed** (ACKed); it is never reported as cancelled. A client
+timeout is likewise never a cancellation: query
+`mavctl operation get <id>` or `mavctl status` for the actual vehicle
+state. There is no operation cancellation command. `disarm --force` is an
+emergency motor stop (its use in flight may cause a crash) and gains no
+automatic preemption.
+
 ## Altitude limits
 
 `takeoff` requires a finite positive altitude (exit 2 `invalid_altitude`

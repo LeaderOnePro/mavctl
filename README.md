@@ -117,6 +117,22 @@ Notable in 0.3.0:
   claim; mission execution / start / AUTO is intentionally not included
   (Phase 3B).
 
+Operation observation (0.4.0.dev0):
+
+- `takeoff --wait`, `land --wait` and `rtl --wait` run their milestone
+  observation through a daemon-owned operation: the command lock is
+  released as soon as the vehicle accepts the command, so `rtl` / `land`
+  / `status` stay available while a wait is in progress.
+- A later accepted command supersedes an in-flight wait: the superseded
+  command reports exit 6 `operation_superseded` — it was **executed**
+  (ACKed), not cancelled; re-check the vehicle with `mavctl status`.
+- `--timeout` expiry reports exit 6 `operation_wait_timeout` with
+  `operation_still_running: true` — the accepted vehicle action is not
+  cancelled by the client timeout.
+- `mavctl operation get <id>` observes an operation (read-only). If the
+  daemon restarted, the operation is unknown — re-check `mavctl status`;
+  that does not mean the vehicle action did not happen.
+
 Notable in 0.2.1:
 
 - `mavctl --version` prints the installed version — no daemon or vehicle

@@ -38,6 +38,12 @@ from mavctl.models.mission import (
     mission_item_to_int_fields,
     mission_result_name,
 )
+from mavctl.models.operation import (
+    TERMINAL_OPERATION_STATES,
+    OperationKind,
+    OperationSnapshot,
+    OperationState,
+)
 from mavctl.models.protocol import (
     DaemonResponse,
     ExitCode,
@@ -62,6 +68,7 @@ __all__ = [
     "MISSION_MAX_ITEMS",
     "MISSION_RESULT_NAMES",
     "MISSION_TYPE_MISSION",
+    "TERMINAL_OPERATION_STATES",
     "Attitude",
     "Battery",
     "CommandOutcome",
@@ -78,6 +85,9 @@ __all__ = [
     "MissionTakeoff",
     "MissionV1",
     "MissionWaypoint",
+    "OperationKind",
+    "OperationSnapshot",
+    "OperationState",
     "Position",
     "RpcError",
     "RpcRequest",
