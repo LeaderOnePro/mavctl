@@ -509,6 +509,61 @@ def mission_download(
     emit_success(result, json_mode=False, human=_format_mission_items(mission))
 
 
+@mission_app.command("start")
+def mission_start(
+    confirm: ConfirmOption = False,
+    dry_run: DryRunOption = False,
+    wait: WaitOption = False,
+    timeout: TimeoutOption = 60.0,
+    json_mode: JsonOption = False,
+) -> None:
+    """Start or resume the stored mission (requires --confirm; Phase 3B-1).
+
+    Requires an uploaded mission, an armed vehicle, and a fresh link. On
+    ArduCopter this command may transition the vehicle to AUTO — that is
+    explicit, confirmation-gated mission execution behavior. The milestone
+    observed with --wait is mission ACTIVE + mode AUTO, not whole-mission
+    completion. Execution beyond the start (pause/resume/stop) is not
+    implemented.
+    """
+
+    _client_timeout(wait, timeout)
+    result = _call(
+        "mission_start",
+        json_mode,
+        {
+            "confirm": confirm,
+            "dry_run": dry_run,
+            "wait": wait,
+            "timeout": timeout,
+        },
+        timeout=_client_timeout(wait, timeout),
+    )
+    emit_success(result, json_mode=json_mode, human=_format_mission_start(result))
+
+
+def _format_mission_start(result: dict[str, Any]) -> str:
+    """Human rendering for mission_start responses (incl. wait outcomes)."""
+
+    if result.get("dry_run"):
+        lines = ["[dry-run] mission_start: WOULD EXECUTE"]
+        for check in result.get("checks", []):
+            mark = "PASS" if check.get("passed") else "FAIL"
+            lines.append(f"  [{mark}] {check.get('name')}: {check.get('detail')}")
+        return "\n".join(lines)
+    if result.get("already_running"):
+        return "mission start: already running — no action taken"
+    operation_id = result.get("operation_id")
+    if result.get("waited") is True:
+        # milestone reached: mission ACTIVE + mode AUTO observed
+        parts = ["mission start: ACTIVE"]
+    else:
+        parts = ["mission start: ACCEPTED"]
+    if operation_id:
+        parts.append(f"(operation {operation_id})")
+    return " ".join(parts)
+
+
 @mission_app.command("clear")
 def mission_clear(
     confirm: ConfirmOption = False,
