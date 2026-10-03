@@ -157,10 +157,9 @@ SITL tools.
 # Mission upload / inspect / clear (Phase 3A)
 
 Upload takes a mission JSON file (v1 schema: takeoff-first, waypoint/land/rtl
-items). Upload and clear never start the vehicle; execution does not exist
-yet (uploading does not switch the vehicle to AUTO). The transfer is
+items). Uploading and clearing never arm motors or take off; the transfer is
 ArduPilot SITL validated (lossless round-trip including takeoff); no
-real-aircraft claim.
+real-aircraft claim. Mission start is a separate command (see below).
 
 ```bash
 # preview first — dry-run runs every guard and sends nothing
@@ -196,3 +195,28 @@ mavctl operation get <operation_id> --json
 The daemon operation continues after a client timeout; a daemon restart
 loses the operation (re-check `mavctl status` — the vehicle action may still
 have happened).
+
+# Mission start (Phase 3B-1; mock-validated — SITL execution conformance pending)
+
+Starts or resumes the stored mission. Requires an uploaded mission, an armed
+vehicle, and a fresh link. On ArduCopter the vehicle handler may transition
+the vehicle to AUTO — explicit, confirmation-gated execution behavior.
+
+```bash
+# preview the guards
+mavctl mission start --confirm --dry-run
+
+# start; --wait observes the bounded start milestone (mission ACTIVE + AUTO),
+# never whole-mission completion
+mavctl mission start --confirm --wait --timeout 30
+
+# observe progress later
+mavctl operation get <operation_id> --json
+```
+
+Outcomes: reached → exit 0; superseded (a later RTL/land replaced the
+observation) → exit 6 with the replacing operation id — the start command
+was executed, not cancelled; timeout → exit 6
+`operation_wait_timeout` with `operation_still_running: true` (the daemon
+keeps observing); link loss → exit 4. See
+references/troubleshooting.md. Pause/resume/stop are not implemented.

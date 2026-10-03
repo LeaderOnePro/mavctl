@@ -26,9 +26,11 @@ _SUPPORTED_COMMANDS = frozenset(
 )
 
 _MAVCTL_INVOCATION = re.compile(r"mavctl\s+([A-Za-z][A-Za-z0-9_-]*)")
-# Mission execution is Phase 3B: never a runnable command in any README.
+# Mission execution beyond `start` is Phase 3B: `mavctl mission start`
+# itself is implemented (mock-validated) and may appear in runnable text;
+# pause/resume/stop/set-current never may.
 _MISSION_EXECUTION_INVOCATION = re.compile(
-    r"mavctl\s+mission\s+(start|pause|resume|stop|set-current)\b", re.IGNORECASE
+    r"mavctl\s+mission\s+(pause|resume|stop|set-current)\b", re.IGNORECASE
 )
 # Unimplemented capabilities may be *named* as bare words, never invoked.
 _UNSUPPORTED_INVOCATION = re.compile(

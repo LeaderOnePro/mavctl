@@ -1,6 +1,11 @@
 # Design: Phase 3B — Mission Execution, Progress Observation, and Safe Interruption
 
-Status: **design only** — nothing in this document is implemented. Tracking
+Status: **mission start / observation mock-first implemented** (Phase 3B-1,
+0.4.0.dev0): `mission start --confirm [--wait] [--timeout] [--dry-run]`,
+the `MissionExecutionState` observation (MISSION_CURRENT, locked source),
+`check_mission_start` guards, and the operation integration are
+implemented and mock-tested; **SITL execution conformance is pending**.
+Pause/resume/stop and interruption runtime remain unimplemented. Tracking
 issue: #31. This document is the input for the future Phase 3B
 implementation branch; the [FACT]/[DECIDED]/[OPEN]/[NON-GOAL] discipline
 matches docs/design/mission-protocol-v1.md (Phase 3A).
@@ -189,9 +194,10 @@ upload/clear, and no execution at all without `--confirm`.
   `MAV_CMD_MISSION_START`, avoiding dependence on `MIS_RESTART` and other
   parameter-dependent restart semantics.
 - **AUTO but mission not active** (`mission_state` NOT_STARTED/STOPPED):
-  `[OPEN]` — SITL must verify whether mavctl should send
-  `MAV_CMD_MISSION_START` (start-or-resume per vehicle parameters) or
-  refuse with a hint; do not assume either behavior.
+  `[DECIDED]` — mavctl sends `MAV_CMD_MISSION_START`; ArduCopter's handler
+  calls `start_or_resume()` when not already RUNNING (source-verified).
+  SITL verification of the observable outcome is still pending; if SITL
+  contradicts this, downgrade to refuse-with-hint.
 
 ### C.2 What `--wait` waits for
 

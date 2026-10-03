@@ -468,6 +468,24 @@ harness 中验证（见 docs/design/mission-protocol-v1.md §I）。
 uv run mavctl daemon stop
 ```
 
+## 8i. Phase 3B-1 mission start 验收（计划——尚未运行）
+
+`mavctl mission start` 已 mock-first 实现（0.4.0.dev0）。SITL 执行验收
+在专用任务中运行，本轮仅记录计划（全部步骤含操作者手动 arm / mode AUTO，
+mavctl 不隐式 arm）：
+
+```bash
+# 1. Phase 3A 上传任务；确认 disarmed + 新鲜状态 + verified count
+# 2. 操作者手动 arm 并切 AUTO（mission start 之外）
+# 3. mavctl mission start --confirm --wait --timeout 30
+# 4. 观察 MISSION_CURRENT / status --json 进度
+# 5. 验证 --wait milestone（mission ACTIVE + AUTO）
+# 6. 验证任务以其末项（RTL/land）结束 → mission_state COMPLETE
+# 7. 清理：mavctl mission clear --confirm + 读回空
+```
+
+RTL/land 中断运行中的 mission 仅在 Issue #21 方案实现后测试。
+
 ## 9. 退出码总表
 
 | 退出码 | 含义 |

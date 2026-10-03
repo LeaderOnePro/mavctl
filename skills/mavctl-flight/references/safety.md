@@ -96,8 +96,16 @@ items above the altitude ceiling are rejected.
 
 An upload timeout can leave the remote mission state **uncertain** — the
 response carries reason `remote_mission_state_uncertain` (exit 6); always
-re-check with `mavctl mission download` before trusting anything. There is no
-mission start/execution command: uploading never flies the vehicle.
+re-check with `mavctl mission download` before trusting anything.
+
+`mission start` (Phase 3B-1) sends `MAV_CMD_MISSION_START`: on ArduCopter the
+vehicle may transition to AUTO and start or resume execution — explicit,
+confirmation-gated behavior. It requires an uploaded mission (vehicle-
+verified count), heartbeat `armed == true`, and a fresh link; it never arms
+motors, takes off, or climbs implicitly. The `--wait` milestone (mission
+ACTIVE + mode AUTO) is observed through a non-blocking operation (see the
+operation notes above). Mission execution is mock-validated only — SITL
+execution conformance is pending; no real-aircraft claim.
 
 mavctl talks to the vehicle under its own GCS identity (default source
 system 254, `--source-system` on `daemon start`) so it does not share an
