@@ -11,7 +11,7 @@ from mavctl import __version__
 from mavctl.cli.app import app
 from mavctl.daemon import process
 from mavctl.daemon.client import DaemonNotRunningError
-from mavctl.models import DaemonResponse, ExitCode
+from mavctl.models import CommandOutcome, DaemonResponse, ExitCode
 
 runner = CliRunner()
 
@@ -401,3 +401,157 @@ def test_operation_get_daemon_down_maps_exit_3(monkeypatch: pytest.MonkeyPatch) 
     monkeypatch.setattr(_CALL_DAEMON, boom)
     result = runner.invoke(app, ["operation", "get", "op-abc"])
     assert result.exit_code == ExitCode.DAEMON_NOT_RUNNING
+
+
+# -- mission start (Phase 3B-1) -------------------------------------------------
+
+
+def test_mission_start_success_json(monkeypatch: pytest.MonkeyPatch) -> None:
+    payload = {
+        "action": "mission_start",
+        "executed": True,
+        "outcome": CommandOutcome.from_ack(0, 1).model_dump(),
+        "operation_id": "op-abc",
+    }
+    monkeypatch.setattr(_CALL_DAEMON, lambda *a, **k: DaemonResponse.success(payload))
+    result = runner.invoke(
+        app, ["mission", "start", "--confirm", "--json"]
+    )
+    assert result.exit_code == ExitCode.SUCCESS
+    body = json.loads(result.stdout)
+    assert body["operation_id"] == "op-abc"
+    assert "ACCEPTED" in result.stdout
+
+
+def test_mission_start_wait_reached_human(monkeypatch: pytest.MonkeyPatch) -> None:
+    payload = {
+        "action": "mission_start",
+        "executed": True,
+        "waited": True,
+        "outcome": CommandOutcome.from_ack(0, 1).model_dump(),
+        "operation_id": "op-abc",
+    }
+    monkeypatch.setattr(_CALL_DAEMON, lambda *a, **k: DaemonResponse.success(payload))
+    result = runner.invoke(app, ["mission", "start", "--confirm", "--wait", "--timeout", "5"])
+    assert result.exit_code == ExitCode.SUCCESS
+    assert "mission start: ACTIVE" in result.stdout
+    assert "op-abc" in result.stdout
+
+
+def test_mission_start_dry_run_lists_checks(monkeypatch: pytest.MonkeyPatch) -> None:
+    payload = {
+        "dry_run": True,
+        "action": "mission_start",
+        "would_execute": True,
+        "already_satisfied": False,
+        "note": None,
+        "checks": [
+            {"name": "confirm", "passed": True, "detail": "confirmed"},
+            {"name": "mission_present", "passed": True, "detail": "count 4"},
+        ],
+    }
+    monkeypatch.setattr(_CALL_DAEMON, lambda *a, **k: DaemonResponse.success(payload))
+    result = runner.invoke(
+        app, ["mission", "start", "--confirm", "--dry-run"]
+    )
+    assert result.exit_code == ExitCode.SUCCESS
+    assert "[dry-run] mission_start: WOULD EXECUTE" in result.stdout
+    assert "mission_present" in result.stdout
+
+
+def test_mission_start_without_confirm_rejects(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Like arm/disarm, the confirm gate lives in the daemon guard; the CLI
+    # passes confirm=False through and surfaces the structured rejection.
+    monkeypatch.setattr(
+        _CALL_DAEMON,
+        lambda *_a, **_k: DaemonResponse.failure(
+            ExitCode.SAFETY_REJECTED,
+            "mission start is a state-changing command and requires explicit "
+            "confirmation",
+            {"reason": "confirmation_required"},
+        ),
+    )
+    result = runner.invoke(app, ["mission", "start"])
+    assert result.exit_code == ExitCode.SAFETY_REJECTED
+    assert "requires explicit confirmation" in result.output
+
+
+def test_mission_start_mission_absent_maps_exit_5(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        _CALL_DAEMON,
+        lambda *a, **k: DaemonResponse.failure(
+            ExitCode.SAFETY_REJECTED,
+            "refusing to mission_start: the vehicle reports no stored mission "
+            "(verified count 0)",
+            {
+                "reason": "mission_absent",
+                "hint": "upload a mission first (mavctl mission upload "
+                "--confirm), then retry",
+            },
+        ),
+    )
+    result = runner.invoke(app, ["mission", "start", "--confirm", "--json"])
+    assert result.exit_code == ExitCode.SAFETY_REJECTED
+    body = json.loads(result.stderr)
+    assert body["error"]["detail"]["reason"] == "mission_absent"
+
+
+def test_mission_start_wait_timeout_maps_operation_contract(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        _CALL_DAEMON,
+        lambda *a, **k: DaemonResponse.failure(
+            ExitCode.NACK_TIMEOUT,
+            "mission_start accepted but did not complete within 1s: "
+            "mission execution (AUTO + mission_state ACTIVE) not observed",
+            {
+                "reason": "operation_wait_timeout",
+                "operation_still_running": True,
+                "operation_id": "op-xyz",
+                "hint": "query 'mavctl operation get <id>'; the accepted "
+                "vehicle action is not cancelled by this timeout",
+            },
+        ),
+    )
+    result = runner.invoke(
+        app,
+        ["mission", "start", "--confirm", "--wait", "--timeout", "1", "--json"],
+    )
+    assert result.exit_code == ExitCode.NACK_TIMEOUT
+    body = json.loads(result.stderr)
+    assert body["error"]["detail"]["reason"] == "operation_wait_timeout"
+    assert body["error"]["detail"]["operation_still_running"] is True
+    assert body["error"]["detail"]["operation_id"] == "op-xyz"
+    assert "not cancelled" in body["error"]["detail"]["hint"]
+
+
+def test_mission_start_superseded_maps_operation_contract(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        _CALL_DAEMON,
+        lambda *a, **k: DaemonResponse.failure(
+            ExitCode.NACK_TIMEOUT,
+            "mission_start was accepted by the vehicle but superseded by "
+            "operation op-rtl: vehicle state must be re-queried",
+            {
+                "reason": "operation_superseded",
+                "operation_id": "op-ms",
+                "superseded_by_operation_id": "op-rtl",
+                "hint": "re-check the vehicle with 'mavctl status'; the "
+                "superseded command was not cancelled",
+            },
+        ),
+    )
+    result = runner.invoke(
+        app, ["mission", "start", "--confirm", "--json"]
+    )
+    assert result.exit_code == ExitCode.NACK_TIMEOUT
+    body = json.loads(result.stderr)
+    assert body["error"]["detail"]["reason"] == "operation_superseded"
+    assert body["error"]["detail"]["superseded_by_operation_id"] == "op-rtl"

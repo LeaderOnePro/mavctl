@@ -36,7 +36,7 @@ _UNSUPPORTED_DANGEROUS = re.compile(
     r"mavctl\s+(geofence|fence|rally|params?)\b", re.IGNORECASE
 )
 _UNSUPPORTED_MISSION_EXECUTION = re.compile(
-    r"mavctl\s+mission\s+(start|pause|resume|stop|set-current)\b", re.IGNORECASE
+    r"mavctl\s+mission\s+(pause|resume|stop|set-current)\b", re.IGNORECASE
 )
 _MAVCTL_INVOCATION = re.compile(r"mavctl\s+([A-Za-z][A-Za-z0-9_-]*)")
 
@@ -195,15 +195,29 @@ def test_runnable_forms_are_rejected_in_code_segments() -> None:
     assert _find_in_code(_UNSUPPORTED_DANGEROUS, inline) == ["mavctl params"]
 
 
-def test_mission_execution_is_never_a_runnable_command() -> None:
-    # Phase 3B future work: mission upload/download/clear exist, but start /
-    # pause / resume / stop / set-current must not appear as runnable text.
-    fenced = "```bash\nmavctl mission start --confirm\nmavctl mission set-current 2\n```\n"
+def test_mission_pause_resume_stop_never_runnable() -> None:
+    # Phase 3B future work: mission upload/download/clear AND start are
+    # implemented, but pause/resume/stop/set-current must not appear as
+    # runnable text.
+    fenced = "```bash\nmavctl mission pause\nmavctl mission set-current 2\n```\n"
     hits = _find_in_code(_UNSUPPORTED_MISSION_EXECUTION, fenced)
-    assert hits == ["mavctl mission start", "mavctl mission set-current"]
-    # the implemented surface stays allowed
-    allowed = "```bash\nmavctl mission upload m.json --confirm\n```\n"
+    assert hits == ["mavctl mission pause", "mavctl mission set-current"]
+    # the implemented surface (including start) stays allowed
+    allowed = (
+        "```bash\nmavctl mission upload m.json --confirm\n"
+        "mavctl mission start --confirm\n```\n"
+    )
     assert _find_in_code(_UNSUPPORTED_MISSION_EXECUTION, allowed) == []
+
+
+def test_skill_states_mission_start_validation_scope() -> None:
+    """`mission start` is documented as mock- and ArduCopter-SITL-validated
+    with an explicit no-real-aircraft claim — never as real-aircraft
+    proven."""
+    skill = _DOC_FILES[0].read_text(encoding="utf-8")
+    safety = _DOC_FILES[2].read_text(encoding="utf-8")
+    assert "ArduCopter-SITL-validated" in skill
+    assert "no real-aircraft claim" in " ".join(safety.split())
 
 
 # -- safety semantics -------------------------------------------------------

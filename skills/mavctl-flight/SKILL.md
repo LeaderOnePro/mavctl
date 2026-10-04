@@ -13,12 +13,13 @@ to be driven by agents. A resident daemon owns the vehicle link; every
 
 `status`, `telemetry`, `arm`, `disarm`, `mode`, `takeoff`, `land`, `rtl`,
 `daemon start|stop|status`,
-`mission upload|download|clear` (ArduPilot SITL validated; upload/clear need
-`--confirm`; there is **no** mission start/execution command),
+`mission upload|download|clear|start` (upload/clear need `--confirm`;
+`mission start` is mock- and ArduCopter-SITL-validated on an isolated
+no-MAVProxy loopback instance; it may transition the vehicle to AUTO),
 `operation get <id>` (read-only observation of a --wait operation).
 Nothing else exists — do not guess or simulate commands for mission
-execution, operation cancellation, parameter editing, geofences, etc. They
-are not implemented yet.
+pause/resume/stop, operation cancellation, parameter editing, geofences,
+etc. They are not implemented yet.
 
 Common flags: `--json` everywhere; `--confirm` required on all state-changing
 commands; `--dry-run` previews guard decisions; `--wait --timeout <s>`

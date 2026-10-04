@@ -152,6 +152,21 @@ restart (the registry is in-memory) or because the operation was evicted
 by the bounded retention window. This does **not** mean the vehicle action
 did not happen; re-check `mavctl status --json`.
 
+## mission start troubleshooting (Phase 3B-1)
+
+- `mission_absent` (exit 5): the vehicle-verified count is 0 — upload a
+  mission first (`mavctl mission upload --confirm`), then retry.
+- `mission_requires_armed` (exit 5): heartbeat reports `armed != true` —
+  `mission start` never arms motors; arm first (`mavctl arm --confirm`).
+- `operation_wait_timeout` (exit 6): the start was ACKed but the milestone
+  (mission ACTIVE + AUTO) was not observed within `--timeout`; the daemon
+  keeps observing — query `mavctl operation get <id> --json` / `mavctl
+  status --json`. The vehicle action was not cancelled.
+- `operation_superseded` (exit 6): a later RTL/land replaced the
+  observation; the start command was ACKed — not cancelled. Re-query.
+- `mission_count_unverified` (exit 5): the vehicle count probe timed out —
+  verify with `mavctl mission download`, then retry.
+
 ## altitude_limit / invalid_altitude (exit 5 / exit 2, takeoff)
 
 - `altitude_limit` (exit 5): target above the configured ceiling (default

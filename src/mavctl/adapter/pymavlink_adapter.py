@@ -38,6 +38,7 @@ from mavctl.models import (
     DownloadedMissionV1,
     GpsInfo,
     HomePosition,
+    MissionExecutionState,
     MissionItem,
     MissionItemIntFields,
     MissionOutcome,
@@ -135,6 +136,23 @@ _MISSION_RESIDUE_SETTLE_S = 0.25
 # a re-send would deterministically hit INVALID_SEQUENCE. Genuine loss is
 # still recovered: the vehicle's own retry re-requests after >= 1 s.
 _MISSION_DUPLICATE_REQUEST_DEBOUNCE_S = 0.25
+
+# MAV_CMD_MISSION_START (300): ArduCopter requires param1/param2 == 0
+# (first-item/last-item selection answers MAV_RESULT_DENIED) and the handler
+# itself switches the vehicle to AUTO, sets auto-armed, and calls
+# mission.start_or_resume() when not already RUNNING ([FACT],
+# ArduCopter/GCS_MAVLink_Copter.cpp handle_MAV_CMD_MISSION_START). Motors are
+# NOT armed by this command.
+_MAV_CMD_MISSION_START = 300
+
+_MISSION_STATE_LABELS = {
+    0: "unknown",
+    1: "no_mission",
+    2: "not_started",
+    3: "active",
+    4: "paused",
+    5: "complete",
+}
 
 _GPS_FIX_LABELS = {
     0: "no_gps",
@@ -275,6 +293,10 @@ class PymavlinkAdapter:
         self._telemetry_ts_mono: float | None = None
         self._home_ts_mono: float | None = None
         self._landed_state_ts_mono: float | None = None
+        # Mission execution observation (Phase 3B-1): sourced exclusively
+        # from the locked autopilot's MISSION_CURRENT. None = never received.
+        self._mission_execution: MissionExecutionState | None = None
+        self._mission_execution_ts_mono: float | None = None
 
         # Mission protocol transactions. _mission_lock serializes whole
         # upload/download/clear sessions; _mission_cond + _mission_inbox are
@@ -368,6 +390,15 @@ class PymavlinkAdapter:
                 battery_age_s=_age(self._battery_ts_mono),
                 home_position_age_s=_age(self._home_ts_mono),
                 landed_state_age_s=_age(self._landed_state_ts_mono),
+                mission=(
+                    self._mission_execution.model_copy(
+                        update={
+                            "age_s": _age(self._mission_execution_ts_mono),
+                        }
+                    )
+                    if self._mission_execution is not None
+                    else MissionExecutionState()
+                ),
             )
 
     def get_telemetry(self) -> Telemetry:
@@ -427,6 +458,77 @@ class PymavlinkAdapter:
 
     def rtl(self) -> CommandOutcome:
         return self._send_command(mavutil.mavlink.MAV_CMD_NAV_RETURN_TO_LAUNCH, [])
+
+    def start_mission(self) -> CommandOutcome:
+        """Start or resume the stored mission via ``MAV_CMD_MISSION_START``.
+
+        param1/param2 are zero (ArduCopter answers DENIED for first-item /
+        last-item selection, [FACT]). The vehicle handler itself transitions
+        to AUTO and calls ``mission.start_or_resume()`` when not already
+        RUNNING — this command does not arm motors. Confirmation and guards
+        are the daemon's responsibility.
+        """
+
+        return self._send_command(_MAV_CMD_MISSION_START, [])
+
+    def get_mission_count(self) -> int:
+        """Controlled mission-count probe: `MISSION_REQUEST_LIST` →
+        `MISSION_COUNT` (mission type MISSION) inside a mission session.
+
+        Returns the vehicle-confirmed remote wire count (ArduPilot:
+        includes the vehicle-managed home slot, so an empty mission with
+        home written reports 1 and a stored N-item mission reports N + 1).
+        Raises :class:`MissionProtocolError` on timeout/denial — the caller
+        decides how an unverifiable count maps to guard outcomes.
+        """
+
+        master = self._master
+        if master is None:
+            raise ConnectionLostError("link is not open")
+        overall = time.monotonic() + _MISSION_TRANSACTION_TIMEOUT_S
+        with self._mission_lock:
+            self._begin_mission_session()
+            try:
+                request_outstanding = False
+                resends = 0
+                while True:
+                    if not request_outstanding:
+                        self._send_mission_request_list(master)
+                        request_outstanding = True
+                    msg_type, msg = self._wait_mission(
+                        lambda mtype, _msg: mtype
+                        in ("MISSION_COUNT", "MISSION_ACK"),
+                        min(overall, time.monotonic() + _MISSION_REQUEST_TIMEOUT_S),
+                    )
+                    if msg is None:
+                        if time.monotonic() >= overall:
+                            raise MissionProtocolError(
+                                "vehicle did not answer MISSION_REQUEST_LIST",
+                                result_name="TIMEOUT",
+                            )
+                        resends += 1
+                        if resends > _MISSION_COUNT_RESENDS:
+                            raise MissionProtocolError(
+                                "vehicle did not answer MISSION_REQUEST_LIST "
+                                "after retries",
+                                result_name="TIMEOUT",
+                            )
+                        request_outstanding = False
+                        continue
+                    if msg_type == "MISSION_ACK":
+                        result = int(msg.type)
+                        if result in (0, _MAV_MISSION_INVALID_SEQUENCE):
+                            # stale terminal-ack residue from a preceding
+                            # transaction — never an answer to the request
+                            continue
+                        raise MissionProtocolError(
+                            f"vehicle denied mission count probe: "
+                            f"{mission_result_name(result)}",
+                            result_name=mission_result_name(result),
+                        )
+                    return int(msg.count)
+            finally:
+                self._end_mission_session()
 
     # -- mission transactions (Phase 3A) -----------------------------------
     #
@@ -1481,6 +1583,29 @@ class PymavlinkAdapter:
             self._landed_state = label
             self._landed_state_ts_mono = time.monotonic()
 
+    def _on_mission_current(self, msg: Any) -> None:
+        """Mission execution observation from the locked autopilot only.
+
+        Foreign sources are ignored. MISSION_CURRENT never enters the
+        mission transfer transaction inbox (it is not in
+        ``_MISSION_TRANSACTION_TYPES``), so this observation cannot collide
+        with the upload/download/clear protocol machinery.
+        """
+
+        if not self._is_locked_target(msg):
+            return
+        mission = MissionExecutionState(
+            current_seq=int(msg.seq),
+            total=int(msg.total),
+            state=_MISSION_STATE_LABELS.get(
+                int(msg.mission_state), f"mission_state_{int(msg.mission_state)}"
+            ),
+            mode="mission" if int(msg.mission_mode) == 1 else "none",
+        )
+        with self._lock:
+            self._mission_execution = mission
+            self._mission_execution_ts_mono = time.monotonic()
+
     def _on_home_position(self, msg: Any) -> None:
         if not self._is_locked_target(msg):
             return
@@ -1504,4 +1629,5 @@ _HANDLERS: dict[str, Any] = {
     "COMMAND_ACK": PymavlinkAdapter._on_command_ack,
     "EXTENDED_SYS_STATE": PymavlinkAdapter._on_extended_sys_state,
     "HOME_POSITION": PymavlinkAdapter._on_home_position,
+    "MISSION_CURRENT": PymavlinkAdapter._on_mission_current,
 }

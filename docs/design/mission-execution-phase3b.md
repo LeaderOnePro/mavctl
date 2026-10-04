@@ -1,8 +1,24 @@
 # Design: Phase 3B — Mission Execution, Progress Observation, and Safe Interruption
 
-Status: **design only** — nothing in this document is implemented. Tracking
-issue: #31. This document is the input for the future Phase 3B
-implementation branch; the [FACT]/[DECIDED]/[OPEN]/[NON-GOAL] discipline
+Status: **mission start / observation implemented and SITL-validated**
+(Phase 3B-1, 0.4.0.dev0): `mission start --confirm [--wait] [--timeout]
+[--dry-run]`, the `MissionExecutionState` observation (MISSION_CURRENT,
+locked source), `check_mission_start` guards, and the operation
+integration are implemented, mock-tested, and their execution conformance
+**has been validated against ArduCopter SITL** (§8i of
+docs/SITL_ACCEPTANCE_PHASE2.md). Boundaries of that validation:
+
+- validation is ArduCopter SITL only — **no real-aircraft
+  validation/support claim**;
+- validation used the locally modified ArduPilot checkout at revision
+  `4c98c9221a`; the only reviewed source modification is the
+  `AP_FWVersion.h` macOS host-build/linker workaround — no mission/GCS
+  runtime source modification.
+
+Remaining Phase 3B work (pause/resume/stop/set-current, operation cancel,
+progress UX) is still **unimplemented** and stays as documented below.
+Tracking issue: #31. This document is the input for the remaining Phase 3B
+implementation; the [FACT]/[DECIDED]/[OPEN]/[NON-GOAL] discipline
 matches docs/design/mission-protocol-v1.md (Phase 3A).
 
 ---
@@ -171,7 +187,7 @@ the verified ArduCopter behavior and is removed from this design.
 | --- | --- | --- |
 | `--confirm` required | `[DECIDED]` | execution command; exit 5 `confirmation_required` otherwise |
 | fresh daemon/vehicle link (heartbeat age) | `[DECIDED]` | same preamble as every dangerous command |
-| mission exists and remote mission count > 0 (verified by read-back, not cache) | `[DECIDED]` | `mission start` with no stored mission cannot succeed; Phase 3A download gives the authoritative count |
+| mission exists and remote wire count >= 2 (verified by read-back, not cache) | `[DECIDED]` | `mission start` with no stored mission cannot succeed; Phase 3A download gives the authoritative count. The wire count includes the vehicle-managed home slot (Phase 3A convention): an empty mission with home written reports `MISSION_COUNT == 1`, and ArduPilot re-writes home on every unlocked arming (AP_Arming_Copter → AP_AHRS::set_home → write_home_to_storage), so a flown-then-cleared vehicle reports 1 — only count >= 2 proves at least one mission item. Confirmed against ArduCopter SITL (§8i) |
 | vehicle heartbeat reports `armed == true` | `[DECIDED]` candidate | ArduPilot's `set_auto_armed(true)` (§B.1) is an **internal flight-mode state, not vehicle motor arming** — mavctl must still require actual heartbeat `armed == true` (exit 5, distinct reason), otherwise a mission could "start" on a disarmed vehicle |
 | execution readiness (GPS / home / telemetry freshness) | `[OPEN]` — explicit Phase 3B design decision | mission execution needs an EKF origin (B.2); freshness discipline exists since Phase 2.1; exact required set to be fixed at implementation review |
 | EKF / pre-arm health | `[NON-GOAL]` for Phase 3B v1 | Issue #4 — independent; mavctl relies on the vehicle's own pre-arm checks |
@@ -189,9 +205,10 @@ upload/clear, and no execution at all without `--confirm`.
   `MAV_CMD_MISSION_START`, avoiding dependence on `MIS_RESTART` and other
   parameter-dependent restart semantics.
 - **AUTO but mission not active** (`mission_state` NOT_STARTED/STOPPED):
-  `[OPEN]` — SITL must verify whether mavctl should send
-  `MAV_CMD_MISSION_START` (start-or-resume per vehicle parameters) or
-  refuse with a hint; do not assume either behavior.
+  `[DECIDED]` — mavctl sends `MAV_CMD_MISSION_START`; ArduCopter's handler
+  calls `start_or_resume()` when not already RUNNING (source-verified).
+  SITL verification of the observable outcome is still pending; if SITL
+  contradicts this, downgrade to refuse-with-hint.
 
 ### C.2 What `--wait` waits for
 

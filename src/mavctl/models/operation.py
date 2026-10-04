@@ -17,11 +17,15 @@ from pydantic import BaseModel, ConfigDict
 
 
 class OperationKind(str, Enum):
-    """Flight-command kinds that create operations (Phase 3B-0 set)."""
+    """Flight-command kinds that create operations.
+
+    ``mission_start`` is Phase 3B-1; takeoff/land/rtl are Phase 3B-0.
+    """
 
     TAKEOFF = "takeoff"
     LAND = "land"
     RTL = "rtl"
+    MISSION_START = "mission_start"
 
 
 class OperationState(str, Enum):

@@ -543,6 +543,110 @@ def check_mission_clear(
     return GuardDecision(allowed=True, action=action, checks=checks)
 
 
+def check_mission_start(
+    state: VehicleState,
+    *,
+    mission_count: int,
+    confirm: bool,
+    config: GuardConfig,
+) -> GuardDecision:
+    """Guard ``mission start`` (Phase 3B-1).
+
+    Chain: confirm → fresh connected link → vehicle-verified wire count
+    >= 2 → heartbeat ``armed == true`` → execution-readiness. The wire
+    count includes the vehicle-managed home slot (Phase 3A home-slot wire
+    convention): on ArduPilot an empty mission whose home has been written
+    reports ``MISSION_COUNT == 1``, and arming re-writes home
+    (AP_Arming_Copter → AP_AHRS::set_home → write_home_to_storage), so
+    only count >= 2 means at least one mission item. AUTO + ACTIVE
+    is an idempotent ``already_running`` success (no command is sent — the
+    vehicle would only re-confirm a running mission). AUTO + non-ACTIVE is
+    **allowed**: ArduCopter's ``MAV_CMD_MISSION_START`` handler calls
+    ``start_or_resume()`` when not already RUNNING (source-verified,
+    docs/design/mission-execution-phase3b.md §B.1) — this is the v1 policy
+    for that state, SITL-verify pending. No implicit motor arm and no
+    implicit takeoff: ``armed != true`` rejects.
+    """
+
+    action = "mission_start"
+    terminal, checks = _preamble(action, state, confirm, config)
+    if terminal is not None:
+        return terminal
+
+    if mission_count <= 1:
+        return _reject(
+            action=action,
+            reason="mission_absent",
+            message=(
+                f"refusing to {action}: the vehicle reports no stored "
+                f"mission (verified wire count {mission_count}; the "
+                "ArduPilot count includes the vehicle-managed home slot, "
+                "so only count >= 2 means at least one mission item)"
+            ),
+            hint=(
+                "upload a mission first (mavctl mission upload --confirm), "
+                "then retry"
+            ),
+            checks=checks,
+            failed_check=GuardCheck(
+                name="mission_present",
+                passed=False,
+                detail=f"verified mission count {mission_count}",
+            ),
+        )
+
+    if state.armed is not True:
+        return _reject(
+            action=action,
+            reason="mission_requires_armed",
+            message=(
+                f"refusing to {action}: mission execution requires the "
+                "vehicle to be armed (heartbeat armed == true)"
+            ),
+            hint=(
+                "arm first (mavctl arm --confirm) — this command never arms "
+                "motors implicitly — then retry"
+            ),
+            checks=checks,
+            failed_check=GuardCheck(
+                name="armed", passed=False, detail=f"armed={state.armed}"
+            ),
+        )
+
+    execution = state.mission
+    already_running = (
+        state.flight_mode == "AUTO"
+        and execution is not None
+        and execution.state == "active"
+    )
+    if already_running:
+        return GuardDecision(
+            allowed=True,
+            action=action,
+            checks=[
+                *checks,
+                _passed(
+                    "already_running",
+                    "vehicle is AUTO with mission_state ACTIVE — the "
+                    "vehicle's own idempotent handling makes a start "
+                    "command a no-op; mavctl reports it without sending "
+                    "MAV_CMD_MISSION_START",
+                ),
+            ],
+            already_satisfied=True,
+            note="already running",
+        )
+
+    checks.append(
+        _passed(
+            "mission_start_checks",
+            f"verified mission count {mission_count}; vehicle armed; "
+            f"flight_mode={state.flight_mode}",
+        )
+    )
+    return GuardDecision(allowed=True, action=action, checks=checks)
+
+
 def check_mode(
     state: VehicleState, mode: str, available: list[str], *, confirm: bool, config: GuardConfig
 ) -> GuardDecision:

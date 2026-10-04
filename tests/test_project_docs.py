@@ -19,6 +19,10 @@ _PYPROJECT = (_ROOT / "pyproject.toml").read_text(encoding="utf-8")
 _PUBLISHING = (_ROOT / "docs" / "PUBLISHING.md").read_text(encoding="utf-8")
 _WORKFLOW = (_ROOT / ".github" / "workflows" / "publish.yml").read_text(encoding="utf-8")
 _SKILLS_ACCEPTANCE = (_ROOT / "docs" / "SKILLS_CLI_ACCEPTANCE.md").read_text(encoding="utf-8")
+_AGENTS_MD = (_ROOT / "AGENTS.md").read_text(encoding="utf-8")
+_PHASE3B_DESIGN = (_ROOT / "docs" / "design" / "mission-execution-phase3b.md").read_text(
+    encoding="utf-8"
+)
 
 _SUPPORTED_COMMANDS = frozenset(
     {"status", "telemetry", "arm", "disarm", "mode", "takeoff", "land", "rtl",
@@ -26,9 +30,11 @@ _SUPPORTED_COMMANDS = frozenset(
 )
 
 _MAVCTL_INVOCATION = re.compile(r"mavctl\s+([A-Za-z][A-Za-z0-9_-]*)")
-# Mission execution is Phase 3B: never a runnable command in any README.
+# Mission execution beyond `start` is Phase 3B: `mavctl mission start`
+# itself is implemented (mock- and ArduCopter-SITL-validated) and may
+# appear in runnable text; pause/resume/stop/set-current never may.
 _MISSION_EXECUTION_INVOCATION = re.compile(
-    r"mavctl\s+mission\s+(start|pause|resume|stop|set-current)\b", re.IGNORECASE
+    r"mavctl\s+mission\s+(pause|resume|stop|set-current)\b", re.IGNORECASE
 )
 # Unimplemented capabilities may be *named* as bare words, never invoked.
 _UNSUPPORTED_INVOCATION = re.compile(
@@ -356,14 +362,92 @@ def test_publishing_doc_gives_next_dev_version_guidance() -> None:
 
 
 def test_readme_mission_surface_lists_exactly_the_implemented_commands() -> None:
-    # The READMEs document exactly the three implemented mission commands
-    # (upload / download / clear) and never show a runnable execution
-    # command (negated prose like "no mission start command" is fine).
+    # The READMEs document exactly the four implemented mission commands
+    # (upload / download / clear / start) and never show a runnable
+    # pause/resume/stop/set-current command.
     for readme in (_README, _ZH_README):
         assert "mavctl mission upload" in readme
         assert "mavctl mission download" in readme
         assert "mavctl mission clear" in readme
+        assert "mavctl mission start" in readme
         assert _MISSION_EXECUTION_INVOCATION.findall(readme) == []
+
+
+def test_readme_zh_mission_start_paragraph_matches_english_semantics() -> None:
+    """README_ZH must mirror the README.md mission-start semantics:
+    implemented (mock- and ArduCopter-SITL-validated), may transition to
+    AUTO, no implicit arm/takeoff, already_running idempotent, --wait
+    bounded to the start milestone, SITL conformance run (automated,
+    loopback) — and no residual "SITL conformance pending" claim."""
+
+    # the old negations are gone
+    assert "目前没有 mission start" not in _ZH_README
+    assert "没有 mission start/execution" not in _ZH_README
+    assert "尚未运行" not in _ZH_README
+
+    # implemented + mock- and ArduCopter-SITL-validated (conformance ran)
+    assert "mavctl mission start --confirm" in _ZH_README
+    assert "0.4.0.dev0" in _ZH_README
+    assert "ArduCopter SITL 验证" in _ZH_README
+    assert "SITL execution conformance 已在隔离" in _ZH_README
+    assert "tests/test_mission_execution_sitl.py" in _ZH_README
+
+    # the command-block annotations state the same validation scope
+    assert "mock- and ArduCopter SITL-validated" in _README
+    assert "已完成 mock 与 ArduCopter SITL 验证" in _ZH_README
+
+    # execution-command semantics: may transition to AUTO; no implicit
+    # arm/takeoff; idempotent; milestone boundary
+    assert "切换到 AUTO" in _ZH_README
+    assert "不会 arm 电机" in _ZH_README
+    assert "隐式起飞" in _ZH_README
+    assert "already_running" in _ZH_README
+    assert "不等待整趟任务完成" in _ZH_README
+
+    # the unsupported surface stays honestly named (prose only, no commands)
+    assert "pause/resume/stop/set-current" in _ZH_README
+    assert "mavctl mission pause" not in _ZH_README
+    assert "mavctl mission stop" not in _ZH_README
+
+
+def test_phase3b_design_doc_records_completed_sitl_validation() -> None:
+    """The Phase 3B design must state that mission-start execution
+    conformance ran (never "pending"), keep the validation boundaries
+    explicit (ArduCopter SITL only, no real-aircraft claim, locally
+    modified checkout provenance), and keep the remaining Phase 3B
+    surface unimplemented."""
+    normalized = " ".join(_PHASE3B_DESIGN.split())
+    assert "has been validated against ArduCopter SITL" in normalized
+    assert "SITL execution conformance is pending" not in normalized
+    assert "no real-aircraft validation/support claim" in normalized
+    assert "4c98c9221a" in normalized
+    assert "AP_FWVersion.h" in normalized
+    assert "no mission/GCS runtime source modification" in normalized
+    # remaining Phase 3B capabilities stay honestly unimplemented
+    assert (
+        "pause/resume/stop/set-current, operation cancel, progress UX"
+        in normalized
+    )
+    assert "is still **unimplemented**" in normalized
+
+
+def test_agents_md_records_merge_commit_policy() -> None:
+    """AGENTS.md must pin the repository merge policy: merge commits by
+    default with the branch's Conventional Commits preserved, squash merge
+    only on explicit owner request, and no automatic feature-branch
+    deletion after merge."""
+    normalized = " ".join(_AGENTS_MD.split())
+    assert 'use GitHub "Create a merge commit"' in normalized
+    assert "Preserve the feature branch's meaningful Conventional Commits" in normalized
+    assert "Do not squash merge by default" in normalized
+    assert (
+        "Squash merge is allowed only when the repository owner explicitly "
+        "requests it" in normalized
+    )
+    assert (
+        "Do not automatically delete feature branches after merge unless "
+        "explicitly requested" in normalized
+    )
 
 
 def test_readme_mission_section_is_ardupilot_first_and_sitl_only() -> None:
