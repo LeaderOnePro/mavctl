@@ -358,14 +358,46 @@ def test_publishing_doc_gives_next_dev_version_guidance() -> None:
 
 
 def test_readme_mission_surface_lists_exactly_the_implemented_commands() -> None:
-    # The READMEs document exactly the three implemented mission commands
-    # (upload / download / clear) and never show a runnable execution
-    # command (negated prose like "no mission start command" is fine).
+    # The READMEs document exactly the four implemented mission commands
+    # (upload / download / clear / start) and never show a runnable
+    # pause/resume/stop/set-current command.
     for readme in (_README, _ZH_README):
         assert "mavctl mission upload" in readme
         assert "mavctl mission download" in readme
         assert "mavctl mission clear" in readme
+        assert "mavctl mission start" in readme
         assert _MISSION_EXECUTION_INVOCATION.findall(readme) == []
+
+
+def test_readme_zh_mission_start_paragraph_matches_english_semantics() -> None:
+    """README_ZH must mirror the README.md mission-start semantics:
+    implemented (mock-validated), may transition to AUTO, no implicit
+    arm/takeoff, already_running idempotent, --wait bounded to the start
+    milestone, SITL conformance not yet run — and no residual
+    "mission start not implemented" negation."""
+
+    # the old negation is gone
+    assert "目前没有 mission start" not in _ZH_README
+    assert "没有 mission start/execution" not in _ZH_README
+
+    # implemented + mock-validated + SITL pending
+    assert "mavctl mission start --confirm" in _ZH_README
+    assert "0.4.0.dev0" in _ZH_README
+    assert "mock 验证" in _ZH_README
+    assert "SITL execution conformance 尚未运行" in _ZH_README
+
+    # execution-command semantics: may transition to AUTO; no implicit
+    # arm/takeoff; idempotent; milestone boundary
+    assert "切换到 AUTO" in _ZH_README
+    assert "不会 arm 电机" in _ZH_README
+    assert "隐式起飞" in _ZH_README
+    assert "already_running" in _ZH_README
+    assert "不等待整趟任务完成" in _ZH_README
+
+    # the unsupported surface stays honestly named (prose only, no commands)
+    assert "pause/resume/stop/set-current" in _ZH_README
+    assert "mavctl mission pause" not in _ZH_README
+    assert "mavctl mission stop" not in _ZH_README
 
 
 def test_readme_mission_section_is_ardupilot_first_and_sitl_only() -> None:

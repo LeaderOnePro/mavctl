@@ -57,6 +57,7 @@ mavctl rtl
 mavctl mission upload <mission.json> --confirm [--dry-run]
 mavctl mission download [--output <mission.json>] [--json]
 mavctl mission clear --confirm [--dry-run]
+mavctl mission start --confirm [--wait] [--timeout]   # 0.4.0.dev0；mock 验证
 ```
 
 横切行为：
@@ -77,15 +78,25 @@ upload → download 语义往返，含 takeoff 项）：自动化测试套件运
 source system 254，可通过 `mavctl daemon start --source-system <1..255>`
 配置），不与其验证过的 GCS（MAVProxy 1.8.74，默认 255/230）共享线上身份；
 传输另外对重复的 relay 流量做了收敛。mission 支持仅限 ArduPilot SITL
-验证——不声明真实飞机验证。目前没有 mission start/execution 命令：上传
-不会切换载具到 AUTO。SITL conformance 运行于本地修改过的 ArduPilot
+验证——不声明真实飞机验证。
+
+**Mission start（0.4.0.dev0，mock 验证）**：`mavctl mission start --confirm`
+不会 arm 电机、也不会隐式起飞——它向已具备 vehicle 验证存储任务、armed
+心跳与新鲜链路的载具发送 `MAV_CMD_MISSION_START`。在 ArduCopter 上，
+vehicle 端 handler 可能将载具切换到 AUTO 并开始或恢复任务执行——这是
+显式的、经 `--confirm` 门控的执行行为。已在 AUTO 且 mission ACTIVE 时为
+幂等 `already_running` 路径（不重发命令）。`--wait` 仅观察有界的启动
+里程碑（mission ACTIVE + 模式 AUTO），**不等待整趟任务完成**。mission
+start 目前为 mock 验证——SITL execution conformance 尚未运行；无真实
+飞机声明。SITL conformance 运行于本地修改过的 ArduPilot
 checkout（revision `4c98c9221a`；唯一经审阅的源码修改是 `AP_FWVersion.h`
 中的 macOS host-build/linker workaround，不影响 mission/GCS 运行时代码）。
 
 未实现——仅描述当前范围，不是路线图承诺：
 
 ```text
-任务（mission）执行（start/pause/resume/stop/set-current）
+任务（mission）pause/resume/stop/set-current（mission start 已于
+0.4.0.dev0 以 mock 验证形式提供）
 参数（param）读写
 地理围栏（geofence）
 日志下载与分析
