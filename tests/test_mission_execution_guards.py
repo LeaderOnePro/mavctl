@@ -120,8 +120,12 @@ def test_mission_state_unknown_still_allows_start() -> None:
     assert decision.allowed is True
 
 
-@pytest.mark.parametrize("count", [-1, 0])
-def test_non_positive_verified_count_rejects(count: int) -> None:
+@pytest.mark.parametrize("count", [-1, 0, 1])
+def test_no_mission_items_rejects(count: int) -> None:
+    """count <= 1 is mission_absent: the ArduPilot wire count includes the
+    vehicle-managed home slot, so an empty mission with home written
+    reports 1 (arming re-writes home — AP_AHRS::set_home →
+    write_home_to_storage). Observed against ArduCopter SITL."""
     decision = _run(_state(), mission_count=count)
     assert decision.allowed is False
     assert decision.reason == "mission_absent"

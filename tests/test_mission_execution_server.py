@@ -252,13 +252,16 @@ async def test_mission_start_link_lost_during_wait() -> None:
 
 
 async def test_mission_start_mission_absent_rejects() -> None:
-    server, _adapter = _server(mission_count=0)
-    response = await server._dispatch(_start_params())
+    # count=1 is the ArduPilot home slot (empty mission with home written);
+    # count=0 is a fully empty vehicle — both are mission_absent.
+    for count in (0, 1):
+        server, _adapter = _server(mission_count=count)
+        response = await server._dispatch(_start_params())
 
-    assert response.ok is False
-    assert response.error is not None
-    assert response.error.code == ExitCode.SAFETY_REJECTED
-    assert response.error.detail["reason"] == "mission_absent"
+        assert response.ok is False
+        assert response.error is not None
+        assert response.error.code == ExitCode.SAFETY_REJECTED
+        assert response.error.detail["reason"] == "mission_absent"
 
 
 async def test_mission_start_count_unverified_rejects() -> None:

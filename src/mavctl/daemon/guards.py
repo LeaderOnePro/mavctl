@@ -552,8 +552,13 @@ def check_mission_start(
 ) -> GuardDecision:
     """Guard ``mission start`` (Phase 3B-1).
 
-    Chain: confirm → fresh connected link → vehicle-verified mission count
-    > 0 → heartbeat ``armed == true`` → execution-readiness. AUTO + ACTIVE
+    Chain: confirm → fresh connected link → vehicle-verified wire count
+    >= 2 → heartbeat ``armed == true`` → execution-readiness. The wire
+    count includes the vehicle-managed home slot (Phase 3A home-slot wire
+    convention): on ArduPilot an empty mission whose home has been written
+    reports ``MISSION_COUNT == 1``, and arming re-writes home
+    (AP_Arming_Copter → AP_AHRS::set_home → write_home_to_storage), so
+    only count >= 2 means at least one mission item. AUTO + ACTIVE
     is an idempotent ``already_running`` success (no command is sent — the
     vehicle would only re-confirm a running mission). AUTO + non-ACTIVE is
     **allowed**: ArduCopter's ``MAV_CMD_MISSION_START`` handler calls
@@ -568,13 +573,15 @@ def check_mission_start(
     if terminal is not None:
         return terminal
 
-    if mission_count <= 0:
+    if mission_count <= 1:
         return _reject(
             action=action,
             reason="mission_absent",
             message=(
                 f"refusing to {action}: the vehicle reports no stored "
-                f"mission (verified count {mission_count})"
+                f"mission (verified wire count {mission_count}; the "
+                "ArduPilot count includes the vehicle-managed home slot, "
+                "so only count >= 2 means at least one mission item)"
             ),
             hint=(
                 "upload a mission first (mavctl mission upload --confirm), "

@@ -475,9 +475,11 @@ class PymavlinkAdapter:
         """Controlled mission-count probe: `MISSION_REQUEST_LIST` →
         `MISSION_COUNT` (mission type MISSION) inside a mission session.
 
-        Returns the vehicle-confirmed remote item count. Raises
-        :class:`MissionProtocolError` on timeout/denial — the caller decides
-        how an unverifiable count maps to guard outcomes.
+        Returns the vehicle-confirmed remote wire count (ArduPilot:
+        includes the vehicle-managed home slot, so an empty mission with
+        home written reports 1 and a stored N-item mission reports N + 1).
+        Raises :class:`MissionProtocolError` on timeout/denial — the caller
+        decides how an unverifiable count maps to guard outcomes.
         """
 
         master = self._master
