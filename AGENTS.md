@@ -55,6 +55,20 @@ designed to be driven by AI coding agents (Claude Code, Codex, etc.) as well as 
   （默认 udp:127.0.0.1:14550），CI 中可跳过
 - 每次修改后运行：`ruff check . && mypy . && pytest -m "not sitl"`
 
+## Git merge policy（合并政策）
+
+Merge policy:
+
+- Default for feature, runtime, safety, reliability, and release PRs:
+  use GitHub "Create a merge commit".
+- Preserve the feature branch's meaningful Conventional Commits so
+  history, review context, and contributor attribution remain visible.
+- Do not squash merge by default.
+- Squash merge is allowed only when the repository owner explicitly
+  requests it.
+- Do not automatically delete feature branches after merge unless
+  explicitly requested.
+
 ## 常用命令
 
 - 安装依赖：`uv sync`

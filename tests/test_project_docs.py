@@ -19,6 +19,7 @@ _PYPROJECT = (_ROOT / "pyproject.toml").read_text(encoding="utf-8")
 _PUBLISHING = (_ROOT / "docs" / "PUBLISHING.md").read_text(encoding="utf-8")
 _WORKFLOW = (_ROOT / ".github" / "workflows" / "publish.yml").read_text(encoding="utf-8")
 _SKILLS_ACCEPTANCE = (_ROOT / "docs" / "SKILLS_CLI_ACCEPTANCE.md").read_text(encoding="utf-8")
+_AGENTS_MD = (_ROOT / "AGENTS.md").read_text(encoding="utf-8")
 _PHASE3B_DESIGN = (_ROOT / "docs" / "design" / "mission-execution-phase3b.md").read_text(
     encoding="utf-8"
 )
@@ -428,6 +429,25 @@ def test_phase3b_design_doc_records_completed_sitl_validation() -> None:
         in normalized
     )
     assert "is still **unimplemented**" in normalized
+
+
+def test_agents_md_records_merge_commit_policy() -> None:
+    """AGENTS.md must pin the repository merge policy: merge commits by
+    default with the branch's Conventional Commits preserved, squash merge
+    only on explicit owner request, and no automatic feature-branch
+    deletion after merge."""
+    normalized = " ".join(_AGENTS_MD.split())
+    assert 'use GitHub "Create a merge commit"' in normalized
+    assert "Preserve the feature branch's meaningful Conventional Commits" in normalized
+    assert "Do not squash merge by default" in normalized
+    assert (
+        "Squash merge is allowed only when the repository owner explicitly "
+        "requests it" in normalized
+    )
+    assert (
+        "Do not automatically delete feature branches after merge unless "
+        "explicitly requested" in normalized
+    )
 
 
 def test_readme_mission_section_is_ardupilot_first_and_sitl_only() -> None:
