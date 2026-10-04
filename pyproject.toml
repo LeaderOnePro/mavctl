@@ -2,7 +2,7 @@
 name = "mavctl"
 # Released versions are cut from release branches: the vX.Y.Z tag is created
 # only after the release PR has merged (docs/PUBLISHING.md is the runbook).
-version = "0.4.0.dev0"
+version = "0.4.0"
 description = "Headless, agent-first MAVLink ground-control CLI for ArduPilot vehicles"
 readme = "README.md"
 license = "MIT"

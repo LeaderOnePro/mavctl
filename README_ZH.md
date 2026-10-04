@@ -57,7 +57,8 @@ mavctl rtl
 mavctl mission upload <mission.json> --confirm [--dry-run]
 mavctl mission download [--output <mission.json>] [--json]
 mavctl mission clear --confirm [--dry-run]
-mavctl mission start --confirm [--wait] [--timeout]   # 0.4.0.dev0；已完成 mock 与 ArduCopter SITL 验证
+mavctl mission start --confirm [--wait] [--timeout]   # 0.4.0；已完成 mock 与 ArduCopter SITL 验证
+mavctl operation get <operation_id> [--json]
 ```
 
 横切行为：
@@ -80,7 +81,7 @@ source system 254，可通过 `mavctl daemon start --source-system <1..255>`
 传输另外对重复的 relay 流量做了收敛。mission 支持仅限 ArduPilot SITL
 验证——不声明真实飞机验证。
 
-**Mission start（0.4.0.dev0，mock + ArduCopter SITL 验证）**：`mavctl
+**Mission start（0.4.0，mock + ArduCopter SITL 验证）**：`mavctl
 mission start --confirm` 不会 arm 电机、也不会隐式起飞——它向已具备
 vehicle 验证存储任务、armed 心跳与新鲜链路的载具发送
 `MAV_CMD_MISSION_START`。在 ArduCopter 上，vehicle 端 handler 可能将载具
@@ -99,13 +100,35 @@ mission/GCS 运行时代码）。
 
 ```text
 任务（mission）pause/resume/stop/set-current（mission start 已于
-0.4.0.dev0 以 mock 与 ArduCopter SITL 验证形式提供）
+0.4.0 以 mock 与 ArduCopter SITL 验证形式提供）
+operation cancel
 参数（param）读写
 地理围栏（geofence）
 日志下载与分析
 固件刷写
 多载具协同
 ```
+
+0.4.0 主要变化：
+
+- Operation foundation（Phase 3B-0）：`takeoff --wait`、`land --wait`、
+  `rtl --wait` 的里程碑观察由 daemon 侧 operation 承载：车辆接受命令后
+  命令锁立即释放，等待期间 `rtl` / `land` / `status` 始终可用。
+- 后续被接受的命令会取代进行中的等待：被取代的命令上报 exit 6
+  `operation_superseded`——它**已被执行**（ACK），并非被取消；请用
+  `mavctl status` 重新查询车辆。
+- `--timeout` 到期上报 exit 6 `operation_wait_timeout`，且
+  `operation_still_running: true`——客户端超时不会取消已接受的车辆动作。
+- `mavctl operation get <id>` 只读观察 operation。daemon 重启后 operation
+  未知——请重新 `mavctl status`；这不代表车辆动作没有发生。
+- Mission start（Phase 3B-1）：`mavctl mission start --confirm [--wait]
+  [--timeout]`——显式、经 `--confirm` 门控的执行命令。在 ArduCopter 上
+  可将载具切至 AUTO 并开始/恢复已存储任务；绝不 arm 电机、也不隐式起飞；
+  `--wait` 仅观察有界的启动里程碑（mission ACTIVE + 模式 AUTO），不等待
+  整趟任务完成。
+- SITL conformance 发现并修复的 guard 语义问题：空任务的 ArduPilot 载具
+  会报 `MISSION_COUNT == 1`（vehicle 托管的 home slot 会在每次未锁定
+  arming 时被重写），mission start guard 因此要求 wire count >= 2。
 
 0.3.0 主要变化：
 
@@ -117,20 +140,8 @@ mission/GCS 运行时代码）。
 - 独立的 mavctl GCS 身份（默认 source system 254、component 190；
   `mavctl daemon start --source-system <1..255>`），与 255 上的常规 GCS 共存。
 - mission 支持仅限 ArduPilot SITL 验证——不声明真实飞机；mission
-  execution / start / AUTO 有意未包含（Phase 3B）。
-
-操作观察（0.4.0.dev0）：
-
-- `takeoff --wait`、`land --wait`、`rtl --wait` 的里程碑观察由 daemon 侧
-  operation 承载：车辆接受命令后命令锁立即释放，等待期间 `rtl` / `land` /
-  `status` 始终可用。
-- 后续被接受的命令会取代进行中的等待：被取代的命令上报 exit 6
-  `operation_superseded`——它**已被执行**（ACK），并非被取消；请用
-  `mavctl status` 重新查询车辆。
-- `--timeout` 到期上报 exit 6 `operation_wait_timeout`，且
-  `operation_still_running: true`——客户端超时不会取消已接受的车辆动作。
-- `mavctl operation get <id>` 只读观察 operation。daemon 重启后 operation
-  未知——请重新 `mavctl status`；这不代表车辆动作没有发生。
+  execution / start / AUTO 在 0.3.0 有意未包含（mission start 于 0.4.0
+  提供）。
 
 0.2.1 主要变化：
 

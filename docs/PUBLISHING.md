@@ -224,9 +224,23 @@ Provenance:
 The next development version must move forward from 0.3.0, for example
 `0.3.1.dev0` or `0.4.0.dev0`. Never re-publish an existing version number.
 
-## Development state: 0.4.0.dev0
+## Release state before v0.4.0
 
-mavctl `0.4.0.dev0` is under development (`pyproject.toml` on the
-`feat/operation-foundation` branch — the Phase 3B-0 long-running operation
-foundation). It is **not** published: production releases remain 0.2.0,
-0.2.1 and 0.3.0, and no 0.4.0 release record exists yet.
+The `release/0.4.0` branch prepares the v0.4.0 release: `pyproject.toml`
+promotes the package version from `0.4.0.dev0` to `0.4.0` on top of the
+merged Phase 3B work.
+
+- PyPI publication has **not** happened: production releases remain 0.2.0,
+  0.2.1 and 0.3.0, and no `v0.4.0` tag has been created.
+- Major features: Phase 3B-0 Operation Foundation (single active operation,
+  epoch fencing, supersession, bounded retention,
+  `mavctl operation get <id>`) and Phase 3B-1 Mission Start / Execution
+  Observation (`mavctl mission start --confirm [--wait] [--timeout]`).
+- Release validation includes the non-SITL gates (ruff, mypy strict,
+  non-SITL suite, build, twine) and ArduCopter SITL conformance — mission
+  protocol plus mission-start execution; the full SITL suite passed twice
+  consecutively during Phase 3B-1 acceptance.
+- Provenance as documented above: locally modified ArduPilot checkout at
+  revision `4c98c9221a`, reviewed `AP_FWVersion.h` macOS host-build/linker
+  workaround only, no mission/GCS runtime source modification, no
+  real-aircraft validation or support claim.
