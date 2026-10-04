@@ -61,7 +61,8 @@ mavctl rtl
 mavctl mission upload <mission.json> --confirm [--dry-run]
 mavctl mission download [--output <mission.json>] [--json]
 mavctl mission clear --confirm [--dry-run]
-mavctl mission start --confirm [--wait] [--timeout]   # 0.4.0.dev0; mock- and ArduCopter SITL-validated
+mavctl mission start --confirm [--wait] [--timeout]   # 0.4.0; mock- and ArduCopter SITL-validated
+mavctl operation get <operation_id> [--json]
 ```
 
 Cross-cutting behaviour:
@@ -90,7 +91,7 @@ ArduPilot checkout at revision `4c98c9221a`; the only reviewed source
 modification was a macOS host-build/linker workaround in `AP_FWVersion.h`
 that does not alter mission/GCS runtime code.
 
-**Mission start (0.4.0.dev0, mock- and ArduCopter-SITL-validated)**:
+**Mission start (0.4.0, mock- and ArduCopter-SITL-validated)**:
 `mavctl mission start --confirm` arms nothing and takes off nothing — it
 sends `MAV_CMD_MISSION_START` to a vehicle that already has a verified
 stored mission, an armed heartbeat, and a fresh link. On ArduCopter the
@@ -106,13 +107,41 @@ Not implemented — current scope only, not a roadmap promise:
 
 ```text
 Mission pause/resume/stop/set-current (mission start ships mock- and
-ArduCopter-SITL-validated in 0.4.0.dev0)
+ArduCopter-SITL-validated in 0.4.0)
+Operation cancel
 Parameters
 Geofence
 Log download / analysis
 Firmware flashing
 Multi-vehicle orchestration
 ```
+
+Notable in 0.4.0:
+
+- Operation foundation (Phase 3B-0): `takeoff --wait`, `land --wait` and
+  `rtl --wait` run their milestone observation through a daemon-owned
+  operation: the command lock is released as soon as the vehicle accepts
+  the command, so `rtl` / `land` / `status` stay available while a wait is
+  in progress.
+- A later accepted command supersedes an in-flight wait: the superseded
+  command reports exit 6 `operation_superseded` — it was **executed**
+  (ACKed), not cancelled; re-check the vehicle with `mavctl status`.
+- `--timeout` expiry reports exit 6 `operation_wait_timeout` with
+  `operation_still_running: true` — the accepted vehicle action is not
+  cancelled by the client timeout.
+- `mavctl operation get <id>` observes an operation (read-only). If the
+  daemon restarted, the operation is unknown — re-check `mavctl status`;
+  that does not mean the vehicle action did not happen.
+- Mission start (Phase 3B-1): `mavctl mission start --confirm [--wait]
+  [--timeout]` — explicit, confirmation-gated execution. On ArduCopter it
+  may transition the vehicle to AUTO and start/resume the stored mission;
+  it never motor-arms or takes off implicitly, and `--wait` observes the
+  bounded startup milestone (mission ACTIVE + mode AUTO), never
+  whole-mission completion.
+- Guard semantics fix found by SITL conformance: an empty ArduPilot
+  mission answers `MISSION_COUNT == 1` (the vehicle-managed home slot is
+  re-written on every unlocked arming), so the mission-start guard
+  requires wire count >= 2.
 
 Notable in 0.3.0:
 
@@ -127,24 +156,8 @@ Notable in 0.3.0:
   `mavctl daemon start --source-system <1..255>`) so mavctl coexists with a
   conventional GCS on 255.
 - Mission support is ArduPilot SITL validated only — no real-aircraft
-  claim; mission execution / start / AUTO is intentionally not included
-  (Phase 3B).
-
-Operation observation (0.4.0.dev0):
-
-- `takeoff --wait`, `land --wait` and `rtl --wait` run their milestone
-  observation through a daemon-owned operation: the command lock is
-  released as soon as the vehicle accepts the command, so `rtl` / `land`
-  / `status` stay available while a wait is in progress.
-- A later accepted command supersedes an in-flight wait: the superseded
-  command reports exit 6 `operation_superseded` — it was **executed**
-  (ACKed), not cancelled; re-check the vehicle with `mavctl status`.
-- `--timeout` expiry reports exit 6 `operation_wait_timeout` with
-  `operation_still_running: true` — the accepted vehicle action is not
-  cancelled by the client timeout.
-- `mavctl operation get <id>` observes an operation (read-only). If the
-  daemon restarted, the operation is unknown — re-check `mavctl status`;
-  that does not mean the vehicle action did not happen.
+  claim; mission execution / start / AUTO was intentionally not included
+  in 0.3.0 (mission start shipped in 0.4.0).
 
 Notable in 0.2.1:
 
