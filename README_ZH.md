@@ -80,23 +80,26 @@ source system 254，可通过 `mavctl daemon start --source-system <1..255>`
 传输另外对重复的 relay 流量做了收敛。mission 支持仅限 ArduPilot SITL
 验证——不声明真实飞机验证。
 
-**Mission start（0.4.0.dev0，mock 验证）**：`mavctl mission start --confirm`
-不会 arm 电机、也不会隐式起飞——它向已具备 vehicle 验证存储任务、armed
-心跳与新鲜链路的载具发送 `MAV_CMD_MISSION_START`。在 ArduCopter 上，
-vehicle 端 handler 可能将载具切换到 AUTO 并开始或恢复任务执行——这是
-显式的、经 `--confirm` 门控的执行行为。已在 AUTO 且 mission ACTIVE 时为
-幂等 `already_running` 路径（不重发命令）。`--wait` 仅观察有界的启动
-里程碑（mission ACTIVE + 模式 AUTO），**不等待整趟任务完成**。mission
-start 目前为 mock 验证——SITL execution conformance 尚未运行；无真实
-飞机声明。SITL conformance 运行于本地修改过的 ArduPilot
-checkout（revision `4c98c9221a`；唯一经审阅的源码修改是 `AP_FWVersion.h`
-中的 macOS host-build/linker workaround，不影响 mission/GCS 运行时代码）。
+**Mission start（0.4.0.dev0，mock + ArduCopter SITL 验证）**：`mavctl
+mission start --confirm` 不会 arm 电机、也不会隐式起飞——它向已具备
+vehicle 验证存储任务、armed 心跳与新鲜链路的载具发送
+`MAV_CMD_MISSION_START`。在 ArduCopter 上，vehicle 端 handler 可能将载具
+切换到 AUTO 并开始或恢复任务执行——这是显式的、经 `--confirm` 门控的执行
+行为。已在 AUTO 且 mission ACTIVE 时为幂等 `already_running` 路径（不重发
+命令）。`--wait` 仅观察有界的启动里程碑（mission ACTIVE + 模式 AUTO），
+**不等待整趟任务完成**。SITL execution conformance 已在隔离的无 MAVProxy
+loopback ArduCopter 实例上通过（自动化于
+`tests/test_mission_execution_sitl.py`：护栏负路径、启动里程碑、幂等重入、
+RTL supersession）；无真实飞机声明。SITL conformance 运行于本地修改过的
+ArduPilot checkout（revision `4c98c9221a`；唯一经审阅的源码修改是
+`AP_FWVersion.h` 中的 macOS host-build/linker workaround，不影响
+mission/GCS 运行时代码）。
 
 未实现——仅描述当前范围，不是路线图承诺：
 
 ```text
 任务（mission）pause/resume/stop/set-current（mission start 已于
-0.4.0.dev0 以 mock 验证形式提供）
+0.4.0.dev0 以 mock 与 ArduCopter SITL 验证形式提供）
 参数（param）读写
 地理围栏（geofence）
 日志下载与分析

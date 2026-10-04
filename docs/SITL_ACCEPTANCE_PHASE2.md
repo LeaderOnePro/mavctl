@@ -468,23 +468,47 @@ harness 中验证（见 docs/design/mission-protocol-v1.md §I）。
 uv run mavctl daemon stop
 ```
 
-## 8i. Phase 3B-1 mission start 验收（计划——尚未运行）
+## 8i. Phase 3B-1 mission start 验收（已运行——ArduCopter SITL）
 
-`mavctl mission start` 已 mock-first 实现（0.4.0.dev0）。SITL 执行验收
-在专用任务中运行，本轮仅记录计划（全部步骤含操作者手动 arm / mode AUTO，
-mavctl 不隐式 arm）：
+`mavctl mission start` 的执行 conformance 已在隔离的无 MAVProxy loopback
+ArduCopter 实例上自动化通过（`tests/test_mission_execution_sitl.py`，
+4 个测试，随 `pytest -m sitl` 运行；instance 1，`tcp:127.0.0.1:5770`，
+专用 GCS source system 254，每轮独立 MAVCTL_HOME；fixture 经
+`mavctl arm --confirm` 满足 armed guard——这是显式的 fixture 动作，
+`mission start` 本身绝不隐式 arm）。已验证的行为：
 
-```bash
-# 1. Phase 3A 上传任务；确认 disarmed + 新鲜状态 + verified count
-# 2. 操作者手动 arm 并切 AUTO（mission start 之外）
-# 3. mavctl mission start --confirm --wait --timeout 30
-# 4. 观察 MISSION_CURRENT / status --json 进度
-# 5. 验证 --wait milestone（mission ACTIVE + AUTO）
-# 6. 验证任务以其末项（RTL/land）结束 → mission_state COMPLETE
-# 7. 清理：mavctl mission clear --confirm + 读回空
-```
+1. **护栏负路径**（无任何飞行状态变化）：缺 `--confirm` → exit 5
+   `confirmation_required`；空/无任务 → exit 5 `mission_absent`（含
+   vehicle-verified count）；已上传任务但未 armed → exit 5
+   `mission_requires_armed`——全程不切模式、不 arm。
+2. **happy path**：upload（takeoff 10m → home 附近 waypoint → rtl）→
+   arm → `mission start --confirm --wait` → ACK ACCEPTED + operation_id +
+   AUTO + mission_state ACTIVE，`--wait` 里程碑达成且有真实爬升证据
+   （relative alt ≥ 5m）。任务随后以其末项 RTL 收尾（COMPLETE + 落地
+   disarm）仅作为里程碑后的观察记录——start 的 `--wait` 成功从不依赖
+   整趟任务完成。
+3. **already running 幂等**：AUTO + ACTIVE 时再次 start →
+   `already_satisfied`（executed=false），不重发
+   `MAV_CMD_MISSION_START`、不新建 operation。
+4. **RTL supersession**：start 后 operation 尚在 WAITING 时执行
+   `rtl --confirm --wait` → operation 终态为 `superseded`（非
+   reached）；RTL 落地并 disarm（无 force-disarm）；清理后任务读回为空。
 
-RTL/land 中断运行中的 mission 仅在 Issue #21 方案实现后测试。
+**home-slot count 发现（本验收的修复项）**：full-suite 起初间歇性
+`mission_requires_armed`，定位为 guard 把 wire count > 0 当作"有任务"。
+ArduPilot 在每次未锁定 arming 时重写 home（AP_Arming_Copter →
+AP_AHRS::set_home → write_home_to_storage），因此飞行后清空的载具对
+`MISSION_REQUEST_LIST` 报 `MISSION_COUNT == 1`（home slot，无任务项）。
+guard 已修正为 wire count >= 2（design §C.1.1 `[DECIDED]`，与 Phase 3A
+download 的 home-aware 语义一致），mock 测试钉住 count 0/1 →
+`mission_absent`。
+
+进程卫生注意：残留的 mavctl daemon 进程会占用 SITL 的 vehicle 链接并使
+后续连接响亮失败（readiness 等待超时）——运行套件前确认无
+`mavctl.daemon` 进程。
+
+mission pause/resume/stop/set-current 仍属 Issue #21 方案；运行中任务的
+RTL supersession（operation 语义）已如上验证。
 
 ## 9. 退出码总表
 

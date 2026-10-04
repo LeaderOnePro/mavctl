@@ -104,8 +104,10 @@ confirmation-gated behavior. It requires an uploaded mission (vehicle-
 verified count), heartbeat `armed == true`, and a fresh link; it never arms
 motors, takes off, or climbs implicitly. The `--wait` milestone (mission
 ACTIVE + mode AUTO) is observed through a non-blocking operation (see the
-operation notes above). Mission execution is mock-validated only — SITL
-execution conformance is pending; no real-aircraft claim.
+operation notes above). Mission execution is mock- and
+ArduCopter-SITL-validated (isolated no-MAVProxy loopback instance,
+automated in `tests/test_mission_execution_sitl.py`); no real-aircraft
+claim.
 
 mavctl talks to the vehicle under its own GCS identity (default source
 system 254, `--source-system` on `daemon start`) so it does not share an

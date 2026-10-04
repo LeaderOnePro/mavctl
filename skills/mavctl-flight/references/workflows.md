@@ -196,7 +196,7 @@ The daemon operation continues after a client timeout; a daemon restart
 loses the operation (re-check `mavctl status` — the vehicle action may still
 have happened).
 
-# Mission start (Phase 3B-1; mock-validated — SITL execution conformance pending)
+# Mission start (Phase 3B-1; mock- and ArduCopter-SITL-validated)
 
 Starts or resumes the stored mission. Requires an uploaded mission, an armed
 vehicle, and a fresh link. On ArduCopter the vehicle handler may transition

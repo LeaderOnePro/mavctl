@@ -14,7 +14,8 @@ to be driven by agents. A resident daemon owns the vehicle link; every
 `status`, `telemetry`, `arm`, `disarm`, `mode`, `takeoff`, `land`, `rtl`,
 `daemon start|stop|status`,
 `mission upload|download|clear|start` (upload/clear need `--confirm`;
-`mission start` is mock-validated — SITL execution conformance pending;
+`mission start` is mock- and ArduCopter-SITL-validated (isolated
+no-MAVProxy loopback instance);
 it may transition the vehicle to AUTO),
 `operation get <id>` (read-only observation of a --wait operation).
 Nothing else exists — do not guess or simulate commands for mission

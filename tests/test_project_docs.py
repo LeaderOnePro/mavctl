@@ -27,8 +27,8 @@ _SUPPORTED_COMMANDS = frozenset(
 
 _MAVCTL_INVOCATION = re.compile(r"mavctl\s+([A-Za-z][A-Za-z0-9_-]*)")
 # Mission execution beyond `start` is Phase 3B: `mavctl mission start`
-# itself is implemented (mock-validated) and may appear in runnable text;
-# pause/resume/stop/set-current never may.
+# itself is implemented (mock- and ArduCopter-SITL-validated) and may
+# appear in runnable text; pause/resume/stop/set-current never may.
 _MISSION_EXECUTION_INVOCATION = re.compile(
     r"mavctl\s+mission\s+(pause|resume|stop|set-current)\b", re.IGNORECASE
 )
@@ -371,20 +371,22 @@ def test_readme_mission_surface_lists_exactly_the_implemented_commands() -> None
 
 def test_readme_zh_mission_start_paragraph_matches_english_semantics() -> None:
     """README_ZH must mirror the README.md mission-start semantics:
-    implemented (mock-validated), may transition to AUTO, no implicit
-    arm/takeoff, already_running idempotent, --wait bounded to the start
-    milestone, SITL conformance not yet run — and no residual
-    "mission start not implemented" negation."""
+    implemented (mock- and ArduCopter-SITL-validated), may transition to
+    AUTO, no implicit arm/takeoff, already_running idempotent, --wait
+    bounded to the start milestone, SITL conformance run (automated,
+    loopback) — and no residual "SITL conformance pending" claim."""
 
-    # the old negation is gone
+    # the old negations are gone
     assert "目前没有 mission start" not in _ZH_README
     assert "没有 mission start/execution" not in _ZH_README
+    assert "尚未运行" not in _ZH_README
 
-    # implemented + mock-validated + SITL pending
+    # implemented + mock- and ArduCopter-SITL-validated (conformance ran)
     assert "mavctl mission start --confirm" in _ZH_README
     assert "0.4.0.dev0" in _ZH_README
-    assert "mock 验证" in _ZH_README
-    assert "SITL execution conformance 尚未运行" in _ZH_README
+    assert "ArduCopter SITL 验证" in _ZH_README
+    assert "SITL execution conformance 已在隔离" in _ZH_README
+    assert "tests/test_mission_execution_sitl.py" in _ZH_README
 
     # execution-command semantics: may transition to AUTO; no implicit
     # arm/takeoff; idempotent; milestone boundary

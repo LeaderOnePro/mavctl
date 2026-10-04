@@ -90,20 +90,23 @@ ArduPilot checkout at revision `4c98c9221a`; the only reviewed source
 modification was a macOS host-build/linker workaround in `AP_FWVersion.h`
 that does not alter mission/GCS runtime code.
 
-**Mission start (0.4.0.dev0, mock-validated)**: `mavctl mission start
---confirm` arms nothing and takes off nothing — it sends
-`MAV_CMD_MISSION_START` to a vehicle that already has a verified stored
-mission, an armed heartbeat, and a fresh link. On ArduCopter the vehicle
-handler may transition to AUTO and start or resume execution — explicit,
-confirmation-gated behavior. `--wait` observes the bounded start milestone
-(mission ACTIVE + mode AUTO), never whole-mission completion. SITL
-execution conformance is still pending; no real-aircraft claim.
+**Mission start (0.4.0.dev0, mock- and ArduCopter-SITL-validated)**:
+`mavctl mission start --confirm` arms nothing and takes off nothing — it
+sends `MAV_CMD_MISSION_START` to a vehicle that already has a verified
+stored mission, an armed heartbeat, and a fresh link. On ArduCopter the
+vehicle handler may transition to AUTO and start or resume execution —
+explicit, confirmation-gated behavior. `--wait` observes the bounded start
+milestone (mission ACTIVE + mode AUTO), never whole-mission completion.
+SITL execution conformance passed against an isolated no-MAVProxy loopback
+ArduCopter instance (automated in `tests/test_mission_execution_sitl.py`:
+guard negative paths, the start milestone, idempotent re-start, RTL
+supersession); no real-aircraft claim.
 
 Not implemented — current scope only, not a roadmap promise:
 
 ```text
-Mission pause/resume/stop/set-current (mission start ships mock-validated
-in 0.4.0.dev0)
+Mission pause/resume/stop/set-current (mission start ships mock- and
+ArduCopter-SITL-validated in 0.4.0.dev0)
 Parameters
 Geofence
 Log download / analysis
