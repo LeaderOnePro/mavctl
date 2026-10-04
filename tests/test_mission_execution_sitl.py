@@ -456,5 +456,3 @@ def server_operations_get(operation_id: str) -> dict[str, Any] | None:
     if not op.ok:
         return None
     return (op.result or {}).get("operation")
-
-

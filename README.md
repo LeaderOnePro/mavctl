@@ -61,7 +61,7 @@ mavctl rtl
 mavctl mission upload <mission.json> --confirm [--dry-run]
 mavctl mission download [--output <mission.json>] [--json]
 mavctl mission clear --confirm [--dry-run]
-mavctl mission start --confirm [--wait] [--timeout]   # 0.4.0.dev0; mock-validated
+mavctl mission start --confirm [--wait] [--timeout]   # 0.4.0.dev0; mock- and ArduCopter SITL-validated
 ```
 
 Cross-cutting behaviour:

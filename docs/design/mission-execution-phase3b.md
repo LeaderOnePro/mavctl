@@ -1,13 +1,24 @@
 # Design: Phase 3B — Mission Execution, Progress Observation, and Safe Interruption
 
-Status: **mission start / observation mock-first implemented** (Phase 3B-1,
-0.4.0.dev0): `mission start --confirm [--wait] [--timeout] [--dry-run]`,
-the `MissionExecutionState` observation (MISSION_CURRENT, locked source),
-`check_mission_start` guards, and the operation integration are
-implemented and mock-tested; **SITL execution conformance is pending**.
-Pause/resume/stop and interruption runtime remain unimplemented. Tracking
-issue: #31. This document is the input for the future Phase 3B
-implementation branch; the [FACT]/[DECIDED]/[OPEN]/[NON-GOAL] discipline
+Status: **mission start / observation implemented and SITL-validated**
+(Phase 3B-1, 0.4.0.dev0): `mission start --confirm [--wait] [--timeout]
+[--dry-run]`, the `MissionExecutionState` observation (MISSION_CURRENT,
+locked source), `check_mission_start` guards, and the operation
+integration are implemented, mock-tested, and their execution conformance
+**has been validated against ArduCopter SITL** (§8i of
+docs/SITL_ACCEPTANCE_PHASE2.md). Boundaries of that validation:
+
+- validation is ArduCopter SITL only — **no real-aircraft
+  validation/support claim**;
+- validation used the locally modified ArduPilot checkout at revision
+  `4c98c9221a`; the only reviewed source modification is the
+  `AP_FWVersion.h` macOS host-build/linker workaround — no mission/GCS
+  runtime source modification.
+
+Remaining Phase 3B work (pause/resume/stop/set-current, operation cancel,
+progress UX) is still **unimplemented** and stays as documented below.
+Tracking issue: #31. This document is the input for the remaining Phase 3B
+implementation; the [FACT]/[DECIDED]/[OPEN]/[NON-GOAL] discipline
 matches docs/design/mission-protocol-v1.md (Phase 3A).
 
 ---

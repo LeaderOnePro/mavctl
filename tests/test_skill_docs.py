@@ -210,6 +210,16 @@ def test_mission_pause_resume_stop_never_runnable() -> None:
     assert _find_in_code(_UNSUPPORTED_MISSION_EXECUTION, allowed) == []
 
 
+def test_skill_states_mission_start_validation_scope() -> None:
+    """`mission start` is documented as mock- and ArduCopter-SITL-validated
+    with an explicit no-real-aircraft claim — never as real-aircraft
+    proven."""
+    skill = _DOC_FILES[0].read_text(encoding="utf-8")
+    safety = _DOC_FILES[2].read_text(encoding="utf-8")
+    assert "ArduCopter-SITL-validated" in skill
+    assert "no real-aircraft claim" in " ".join(safety.split())
+
+
 # -- safety semantics -------------------------------------------------------
 
 

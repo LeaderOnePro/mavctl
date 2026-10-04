@@ -57,7 +57,7 @@ mavctl rtl
 mavctl mission upload <mission.json> --confirm [--dry-run]
 mavctl mission download [--output <mission.json>] [--json]
 mavctl mission clear --confirm [--dry-run]
-mavctl mission start --confirm [--wait] [--timeout]   # 0.4.0.dev0；mock 验证
+mavctl mission start --confirm [--wait] [--timeout]   # 0.4.0.dev0；已完成 mock 与 ArduCopter SITL 验证
 ```
 
 横切行为：

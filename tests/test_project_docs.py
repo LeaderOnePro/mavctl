@@ -19,6 +19,9 @@ _PYPROJECT = (_ROOT / "pyproject.toml").read_text(encoding="utf-8")
 _PUBLISHING = (_ROOT / "docs" / "PUBLISHING.md").read_text(encoding="utf-8")
 _WORKFLOW = (_ROOT / ".github" / "workflows" / "publish.yml").read_text(encoding="utf-8")
 _SKILLS_ACCEPTANCE = (_ROOT / "docs" / "SKILLS_CLI_ACCEPTANCE.md").read_text(encoding="utf-8")
+_PHASE3B_DESIGN = (_ROOT / "docs" / "design" / "mission-execution-phase3b.md").read_text(
+    encoding="utf-8"
+)
 
 _SUPPORTED_COMMANDS = frozenset(
     {"status", "telemetry", "arm", "disarm", "mode", "takeoff", "land", "rtl",
@@ -388,6 +391,10 @@ def test_readme_zh_mission_start_paragraph_matches_english_semantics() -> None:
     assert "SITL execution conformance 已在隔离" in _ZH_README
     assert "tests/test_mission_execution_sitl.py" in _ZH_README
 
+    # the command-block annotations state the same validation scope
+    assert "mock- and ArduCopter SITL-validated" in _README
+    assert "已完成 mock 与 ArduCopter SITL 验证" in _ZH_README
+
     # execution-command semantics: may transition to AUTO; no implicit
     # arm/takeoff; idempotent; milestone boundary
     assert "切换到 AUTO" in _ZH_README
@@ -400,6 +407,27 @@ def test_readme_zh_mission_start_paragraph_matches_english_semantics() -> None:
     assert "pause/resume/stop/set-current" in _ZH_README
     assert "mavctl mission pause" not in _ZH_README
     assert "mavctl mission stop" not in _ZH_README
+
+
+def test_phase3b_design_doc_records_completed_sitl_validation() -> None:
+    """The Phase 3B design must state that mission-start execution
+    conformance ran (never "pending"), keep the validation boundaries
+    explicit (ArduCopter SITL only, no real-aircraft claim, locally
+    modified checkout provenance), and keep the remaining Phase 3B
+    surface unimplemented."""
+    normalized = " ".join(_PHASE3B_DESIGN.split())
+    assert "has been validated against ArduCopter SITL" in normalized
+    assert "SITL execution conformance is pending" not in normalized
+    assert "no real-aircraft validation/support claim" in normalized
+    assert "4c98c9221a" in normalized
+    assert "AP_FWVersion.h" in normalized
+    assert "no mission/GCS runtime source modification" in normalized
+    # remaining Phase 3B capabilities stay honestly unimplemented
+    assert (
+        "pause/resume/stop/set-current, operation cancel, progress UX"
+        in normalized
+    )
+    assert "is still **unimplemented**" in normalized
 
 
 def test_readme_mission_section_is_ardupilot_first_and_sitl_only() -> None:
