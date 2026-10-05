@@ -194,7 +194,7 @@ uv run mavctl daemon stop
 
 ## 从 PyPI 安装
 
-mavctl 0.3.0 已发布到正式 PyPI。安装方式：
+mavctl 0.4.0 已发布到正式 PyPI。安装方式：
 
 ```bash
 uv tool install --upgrade mavctl

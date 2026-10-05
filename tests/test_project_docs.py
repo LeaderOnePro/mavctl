@@ -2,9 +2,9 @@
 
 These tests keep the public entry documents honest about what mavctl can do
 today: the README must document only real commands and state the PyPI channel
-accurately (the published production releases are 0.2.0, 0.2.1 and 0.3.0 —
-no other version may be claimed as released), and the publish workflow must
-refuse anything but formal vX.Y.Z release tags.
+accurately (the published production releases are 0.2.0, 0.2.1, 0.3.0 and
+0.4.0 — no other version may be claimed as released), and the publish
+workflow must refuse anything but formal vX.Y.Z release tags.
 """
 
 from __future__ import annotations
@@ -44,8 +44,8 @@ _FORCE_ARM_INVOCATION = re.compile(r"mavctl\s+arm\b[^\n]*--force", re.IGNORECASE
 
 _PYPI_INSTALL_COMMANDS = ("uv tool install mavctl", "uvx mavctl", "pipx install mavctl")
 
-# "mavctl X.Y.Z is published on production PyPI" — only 0.2.0/0.2.1/0.3.0
-# may match.
+# "mavctl X.Y.Z is published on production PyPI" — only
+# 0.2.0/0.2.1/0.3.0/0.4.0 may match.
 _VERSIONED_PUBLISHED_CLAIM = re.compile(
     r"\bmavctl\s+(\d+\.\d+\.\d+)\s+(?:is|has\s+been)\s+published\s+on\s+production",
     re.IGNORECASE,
@@ -142,7 +142,7 @@ def test_readme_documents_the_pypi_install_channels() -> None:
 
 def test_readme_states_pypi_install_availability() -> None:
     assert "## Install from PyPI" in _README
-    assert "mavctl 0.3.0 is published on production PyPI" in _README
+    assert "mavctl 0.4.0 is published on production PyPI" in _README
     # Stale pre-release wording must not survive the release.
     for stale in ("not available yet", "package is not published", "is being prepared"):
         assert stale not in _README, stale
@@ -152,14 +152,14 @@ def test_readme_states_pypi_install_availability() -> None:
 
 
 def test_only_the_released_version_is_claimed_published() -> None:
-    # Production releases may be claimed as published: 0.2.0, 0.2.1 and
-    # 0.3.0. No future version (0.3.1 / 0.4.0 / …) may ever appear as a
-    # published claim.
+    # Production releases may be claimed as published: 0.2.0, 0.2.1,
+    # 0.3.0 and 0.4.0. No future version (0.4.1 / 0.5.0 / …) may ever
+    # appear as a published claim.
     corpus = f"{_README}\n{_ZH_README}\n{_PUBLISHING}"
     claimed = set(_VERSIONED_PUBLISHED_CLAIM.findall(corpus))
     claimed |= set(_CHINESE_VERSIONED_PUBLISHED_CLAIM.findall(corpus))
-    assert claimed == {"0.2.0", "0.2.1", "0.3.0"}, claimed
-    for future in ("0.3.1", "0.4.0"):
+    assert claimed == {"0.2.0", "0.2.1", "0.3.0", "0.4.0"}, claimed
+    for future in ("0.4.1", "0.5.0"):
         assert not re.search(
             rf"\bmavctl\s+{re.escape(future)}\s+(?:is|has\s+been)\s+published",
             corpus, re.IGNORECASE,
@@ -216,7 +216,7 @@ def test_chinese_readme_documents_the_pypi_install_channels() -> None:
 
 def test_chinese_readme_states_pypi_install_availability() -> None:
     assert "## 从 PyPI 安装" in _ZH_README
-    assert "mavctl 0.3.0 已发布到正式 PyPI" in _ZH_README
+    assert "mavctl 0.4.0 已发布到正式 PyPI" in _ZH_README
     # Stale pre-release wording must not survive the release.
     for stale in ("尚未发布", "暂未发布", "即将发布"):
         assert stale not in _ZH_README, stale
@@ -300,9 +300,9 @@ def test_pyproject_packaging_metadata_is_release_ready_shape() -> None:
     assert metadata_line(r'^license = "MIT"$')
     # The current development version (PEP 440 dev suffix); the release
     # version is promoted on a release branch before tagging. Published
-    # production releases: 0.2.0, 0.2.1 and 0.3.0 (see the claim test
-    # above).
-    assert metadata_line(r'^version = "0\.4\.0"$')
+    # production releases: 0.2.0, 0.2.1, 0.3.0 and 0.4.0 (see the claim
+    # test above).
+    assert metadata_line(r'^version = "0\.4\.1\.dev0"$')
     assert metadata_line(r'^mavctl = "[^"]+"$')
     license_text = (_ROOT / "LICENSE").read_text(encoding="utf-8")
     assert "MIT License" in license_text
@@ -312,15 +312,16 @@ def test_pyproject_packaging_metadata_is_release_ready_shape() -> None:
 # -- 0.2.1 release preparation ----------------------------------------------
 
 
-def test_release_version_is_040() -> None:
-    # The release/0.4.0 branch promotes the package version to 0.4.0
-    # (Phase 3B-0 operation foundation + Phase 3B-1 mission start). It is
-    # still unpublished: no production release record for 0.4.0 exists and
-    # the 0.3.0 record stays the newest one.
-    assert re.search(r'(?m)^version = "0\.4\.0"$', _PYPROJECT) is not None
-    assert re.search(r'(?m)^version = "0\.4\.0\.dev0"$', _PYPROJECT) is None
-    assert "## Production release record: 0.4.0" not in _PUBLISHING
-    assert "## Release state before v0.4.0" in _PUBLISHING
+def test_development_version_is_041_dev0() -> None:
+    # The 0.4.1.dev0 development cycle (mission help text fix) is
+    # unreleased: 0.4.0 is the newest production release with a full
+    # record, no v0.4.1 tag exists, and the dev state section records the
+    # branch.
+    assert re.search(r'(?m)^version = "0\.4\.1\.dev0"$', _PYPROJECT) is not None
+    assert re.search(r'(?m)^version = "0\.4\.0"$', _PYPROJECT) is None
+    assert "## Production release record: 0.4.0" in _PUBLISHING
+    assert "## Development state: 0.4.1.dev0" in _PUBLISHING
+    assert "## Release state before v0.4.0" not in _PUBLISHING
 
 
 def test_publishing_doc_records_030_production_release() -> None:
@@ -349,6 +350,30 @@ def test_publishing_doc_records_030_production_release() -> None:
     assert "isolated no-MAVProxy loopback" in normalized
     assert "4c98c9221a" in _PUBLISHING
     assert "AP_FWVersion.h" in _PUBLISHING
+    assert "no real-aircraft validation or support claim" in normalized
+
+
+def test_publishing_doc_records_040_production_release() -> None:
+    # The 0.4.0 production record must capture the release facts: date,
+    # OIDC method, artifacts, GitHub Release, merge commit, verification,
+    # scope limits, validation, and provenance.
+    normalized = " ".join(_PUBLISHING.split())
+    assert "## Production release record: 0.4.0" in _PUBLISHING
+    assert "Released: 2026-10-04" in normalized
+    assert "Version: 0.4.0" in normalized
+    assert "GitHub Actions OIDC Trusted Publishing" in normalized
+    assert "GitHub Release: v0.4.0" in normalized
+    assert "Merge commit: `7c523da`" in normalized
+    assert "`mavctl mission start --confirm [--wait] [--timeout]`" in normalized
+    assert "`mavctl operation get <id>`" in normalized
+    # scope honesty: the unimplemented execution surface stays named
+    assert (
+        "mission pause/resume/stop/set-current and operation cancel remain"
+        in normalized
+    )
+    assert "out of scope" in normalized
+    assert "passed twice" in normalized  # SITL suite, twice consecutively
+    assert "4c98c9221a" in normalized
     assert "no real-aircraft validation or support claim" in normalized
 
 

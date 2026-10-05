@@ -215,7 +215,7 @@ Safety notes — read before pointing mavctl at anything that flies:
 
 ## Install from PyPI
 
-mavctl 0.3.0 is published on production PyPI. Install with:
+mavctl 0.4.0 is published on production PyPI. Install with:
 
 ```bash
 uv tool install --upgrade mavctl
