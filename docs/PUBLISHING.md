@@ -224,23 +224,62 @@ Provenance:
 The next development version must move forward from 0.3.0, for example
 `0.3.1.dev0` or `0.4.0.dev0`. Never re-publish an existing version number.
 
-## Release state before v0.4.0
+## Production release record: 0.4.0
 
-The `release/0.4.0` branch prepares the v0.4.0 release: `pyproject.toml`
-promotes the package version from `0.4.0.dev0` to `0.4.0` on top of the
-merged Phase 3B work.
+mavctl 0.4.0 is published on production PyPI.
 
-- PyPI publication has **not** happened: production releases remain 0.2.0,
-  0.2.1 and 0.3.0, and no `v0.4.0` tag has been created.
-- Major features: Phase 3B-0 Operation Foundation (single active operation,
-  epoch fencing, supersession, bounded retention,
-  `mavctl operation get <id>`) and Phase 3B-1 Mission Start / Execution
-  Observation (`mavctl mission start --confirm [--wait] [--timeout]`).
-- Release validation includes the non-SITL gates (ruff, mypy strict,
-  non-SITL suite, build, twine) and ArduCopter SITL conformance — mission
-  protocol plus mission-start execution; the full SITL suite passed twice
-  consecutively during Phase 3B-1 acceptance.
-- Provenance as documented above: locally modified ArduPilot checkout at
-  revision `4c98c9221a`, reviewed `AP_FWVersion.h` macOS host-build/linker
-  workaround only, no mission/GCS runtime source modification, no
-  real-aircraft validation or support claim.
+- Released: 2026-10-04
+- Version: 0.4.0
+- Publishing method: GitHub Actions OIDC Trusted Publishing
+- Published artifacts: wheel and sdist
+- GitHub Release: v0.4.0
+- Merge commit: `7c523da` (merge commit per the repository merge policy)
+
+Verification performed after publication:
+
+- production PyPI JSON metadata confirmed (`name: mavctl`,
+  `version: 0.4.0`, wheel + sdist listed);
+- clean virtual-environment installation from PyPI;
+- `mavctl --version` → `mavctl 0.4.0`;
+- `mavctl --help`, `mavctl mission --help` (upload/download/clear/start),
+  `mavctl operation --help`, `mavctl daemon --help`.
+
+Feature scope — Phase 3B-0 Operation Foundation + Phase 3B-1 Mission
+Start / Execution Observation:
+
+- `mavctl operation get <id>`;
+- `mavctl mission start --confirm [--wait] [--timeout]` (ArduCopter may
+  transition to AUTO; never motor-arms; `--wait` observes the startup
+  milestone only);
+- mission pause/resume/stop/set-current and operation cancel remain
+  **out of scope**.
+
+Validation:
+
+- non-SITL test suite (531 tests, ruff, mypy strict, build, twine);
+- ArduCopter SITL conformance: mission protocol + mission-start execution
+  (full SITL suite passed twice consecutively during Phase 3B-1
+  acceptance);
+- clean-environment wheel installation verification.
+
+Provenance:
+
+- validation used a locally modified ArduPilot checkout at revision
+  `4c98c9221a`;
+- reviewed `AP_FWVersion.h` macOS host-build/linker workaround only;
+- no mission/GCS runtime code modification;
+- no real-aircraft validation or support claim.
+
+The next development version must move forward from 0.4.0, for example
+`0.4.1.dev0`. Never re-publish an existing version number.
+
+## Development state: 0.4.1.dev0
+
+mavctl `0.4.1.dev0` is unreleased development work on the
+`fix/mission-help-0.4.1` branch (stale mission command-group help text).
+
+- 0.4.0 is the latest production PyPI release;
+- 0.4.1.dev0 is unreleased development work — no publication claim exists
+  anywhere;
+- no `v0.4.1` tag exists yet;
+- never re-publish an existing version number.

@@ -31,7 +31,10 @@ app = typer.Typer(
 daemon_app = typer.Typer(help="Manage the mavctl daemon process.", no_args_is_help=True)
 app.add_typer(daemon_app, name="daemon")
 mission_app = typer.Typer(
-    help="Mission plan operations: upload, download, clear (no execution).",
+    help=(
+        "Mission plan operations: upload, download, clear, and start "
+        "(mission pause/resume/stop/set-current is not implemented)."
+    ),
     no_args_is_help=True,
 )
 app.add_typer(mission_app, name="mission")

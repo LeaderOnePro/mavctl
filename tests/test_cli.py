@@ -555,3 +555,20 @@ def test_mission_start_superseded_maps_operation_contract(
     body = json.loads(result.stderr)
     assert body["error"]["detail"]["reason"] == "operation_superseded"
     assert body["error"]["detail"]["superseded_by_operation_id"] == "op-rtl"
+
+
+def test_mission_help_lists_exact_implemented_surface() -> None:
+    """The mission group help names exactly the implemented subcommands
+    (upload / download / clear / start); the stale "no execution" wording
+    is gone since mission start ships, and the unimplemented execution
+    commands are named as absent, never offered."""
+    result = runner.invoke(app, ["mission", "--help"])
+    assert result.exit_code == ExitCode.SUCCESS
+    normalized = " ".join(result.stdout.split())
+    for command in ("upload", "download", "clear", "start"):
+        assert command in normalized, command
+    assert "no execution" not in normalized
+    assert (
+        "Mission plan operations: upload, download, clear, and start"
+        " (mission pause/resume/stop/set-current is not implemented)."
+    ) in normalized
