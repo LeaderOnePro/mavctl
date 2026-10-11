@@ -30,13 +30,13 @@ from mavctl.models import (
     ARDUPILOT_HOME_SLOT_SEQ,
     DEFAULT_GCS_SOURCE_COMPONENT,
     DEFAULT_GCS_SOURCE_SYSTEM,
+    ESTIMATOR_STALE_AFTER_S,
     MISSION_MAX_ITEMS,
     MISSION_TYPE_MISSION,
     Attitude,
     Battery,
     CommandOutcome,
     DownloadedMissionV1,
-    ESTIMATOR_STALE_AFTER_S,
     EstimatorObservation,
     GpsInfo,
     HealthObservation,
@@ -430,6 +430,11 @@ class PymavlinkAdapter:
                 estimator = EstimatorObservation()
             else:
                 ekf_age = _age(self._ekf_ts_mono)
+                # The variances are written under the same lock (and in the
+                # same handler) as the timestamp, so a received observation
+                # always carries them.
+                variances = self._ekf_variances
+                assert variances is not None
                 estimator = EstimatorObservation(
                     status=(
                         "observed"
@@ -440,12 +445,12 @@ class PymavlinkAdapter:
                     last_status="observed",
                     flags=list(self._ekf_flags_names),
                     flags_mask=self._ekf_flags_mask,
-                    velocity_variance=self._ekf_variances[0],
-                    pos_horiz_variance=self._ekf_variances[1],
-                    pos_vert_variance=self._ekf_variances[2],
-                    compass_variance=self._ekf_variances[3],
-                    terrain_alt_variance=self._ekf_variances[4],
-                    airspeed_variance=self._ekf_variances[5],
+                    velocity_variance=variances[0],
+                    pos_horiz_variance=variances[1],
+                    pos_vert_variance=variances[2],
+                    compass_variance=variances[3],
+                    terrain_alt_variance=variances[4],
+                    airspeed_variance=variances[5],
                     age_s=ekf_age,
                 )
             if self._sensors_ts_mono is not None:
