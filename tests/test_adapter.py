@@ -71,7 +71,9 @@ def test_sys_status_populates_battery() -> None:
     adapter = PymavlinkAdapter("udp:127.0.0.1:14550")
     _lock_autopilot(adapter)
     adapter._on_sys_status(
-        FakeMsg("SYS_STATUS", voltage_battery=12600, current_battery=1550, battery_remaining=87)
+        FakeMsg("SYS_STATUS", voltage_battery=12600, current_battery=1550, battery_remaining=87,
+                onboard_control_sensors_present=0x7F, onboard_control_sensors_enabled=0x3F,
+                onboard_control_sensors_health=0x3F)
     )
     battery = adapter.get_state().battery
 
@@ -84,7 +86,9 @@ def test_sys_status_handles_unknown_sentinels() -> None:
     adapter = PymavlinkAdapter("udp:127.0.0.1:14550")
     _lock_autopilot(adapter)
     adapter._on_sys_status(
-        FakeMsg("SYS_STATUS", voltage_battery=65535, current_battery=-1, battery_remaining=-1)
+        FakeMsg("SYS_STATUS", voltage_battery=65535, current_battery=-1, battery_remaining=-1,
+                onboard_control_sensors_present=0, onboard_control_sensors_enabled=0,
+                onboard_control_sensors_health=0)
     )
     battery = adapter.get_state().battery
 
@@ -535,7 +539,9 @@ def test_target_locks_onto_autopilot_even_if_seen_after_others() -> None:
 def test_snapshot_telemetry_ignored_before_target_lock() -> None:
     adapter = PymavlinkAdapter("udp:127.0.0.1:14550")
     adapter._on_sys_status(
-        FakeMsg("SYS_STATUS", voltage_battery=12600, current_battery=100, battery_remaining=50)
+        FakeMsg("SYS_STATUS", voltage_battery=12600, current_battery=100, battery_remaining=50,
+                onboard_control_sensors_present=0x7F, onboard_control_sensors_enabled=0x3F,
+                onboard_control_sensors_health=0x3F)
     )
     adapter._on_gps_raw(FakeMsg("GPS_RAW_INT", fix_type=3, satellites_visible=10))
     adapter._on_global_position(
@@ -571,6 +577,9 @@ def test_foreign_snapshot_telemetry_does_not_overwrite_locked() -> None:
             voltage_battery=12600,
             current_battery=1000,
             battery_remaining=80,
+            onboard_control_sensors_present=0x7F,
+            onboard_control_sensors_enabled=0x3F,
+            onboard_control_sensors_health=0x3F,
         )
     )
     adapter._on_gps_raw(
@@ -601,6 +610,9 @@ def test_foreign_snapshot_telemetry_does_not_overwrite_locked() -> None:
             voltage_battery=5000,
             current_battery=0,
             battery_remaining=1,
+            onboard_control_sensors_present=0x1FF,
+            onboard_control_sensors_enabled=0x1FF,
+            onboard_control_sensors_health=0x1FF,
         )
     )
     adapter._on_gps_raw(
@@ -798,6 +810,9 @@ def test_freshness_ages_none_then_recent_then_grow_while_disconnected(
             voltage_battery=12600,
             current_battery=1000,
             battery_remaining=80,
+            onboard_control_sensors_present=0x7F,
+            onboard_control_sensors_enabled=0x3F,
+            onboard_control_sensors_health=0x3F,
         )
     )
     adapter._on_gps_raw(
@@ -859,7 +874,9 @@ def test_rejected_sources_never_set_freshness_timestamps(
 
     # Before lock: every stream message is refused, ages stay None.
     adapter._on_sys_status(
-        FakeMsg("SYS_STATUS", voltage_battery=12600, current_battery=0, battery_remaining=50)
+        FakeMsg("SYS_STATUS", voltage_battery=12600, current_battery=0, battery_remaining=50,
+                onboard_control_sensors_present=0x7F, onboard_control_sensors_enabled=0x3F,
+                onboard_control_sensors_health=0x3F)
     )
     adapter._on_gps_raw(FakeMsg("GPS_RAW_INT", fix_type=6, satellites_visible=10))
     adapter._on_global_position(

@@ -167,6 +167,20 @@ did not happen; re-check `mavctl status --json`.
 - `mission_count_unverified` (exit 5): the vehicle count probe timed out —
   verify with `mavctl mission download`, then retry.
 
+## health block (status --json, observe-only)
+
+- `estimator.status: unknown` with `age_s: null` — no EKF_STATUS_REPORT
+  has ever arrived; never read as "unhealthy" or as "healthy".
+- `estimator.status: unknown` with a counting `age_s` — the last
+  observation is older than the staleness policy; the cached raw fields
+  (`last_status`, `flags`, variances) are history, not current fact.
+- `estimator.status: observed` — a fresh report arrived; it says nothing
+  about estimator health (v1 derives no verdict).
+- `prearm.last_message: null` — no arming-check STATUSTEXT has been seen;
+  never read as "pre-arm passed".
+- No health CLI command exists and no command is gated by health data;
+  ArduPilot's pre-arm checks remain the final authority.
+
 ## altitude_limit / invalid_altitude (exit 5 / exit 2, takeoff)
 
 - `altitude_limit` (exit 5): target above the configured ceiling (default

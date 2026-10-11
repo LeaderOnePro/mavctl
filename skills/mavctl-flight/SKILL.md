@@ -11,7 +11,7 @@ to be driven by agents. A resident daemon owns the vehicle link; every
 
 ## Supported commands (complete list)
 
-`status`, `telemetry`, `arm`, `disarm`, `mode`, `takeoff`, `land`, `rtl`,
+`status` (its `--json` `health` block is observe-only raw EKF/sensor/prearm data — never a verdict), `telemetry`, `arm`, `disarm`, `mode`, `takeoff`, `land`, `rtl`,
 `daemon start|stop|status`,
 `mission upload|download|clear|start` (upload/clear need `--confirm`;
 `mission start` is mock- and ArduCopter-SITL-validated on an isolated

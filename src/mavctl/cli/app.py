@@ -687,7 +687,50 @@ def _format_state(s: dict[str, Any]) -> str:
             f"  alt_msl={_fmt(home.get('alt_msl_m'), ' m')}"
             f"  age={_fmt_age(s.get('home_position_age_s'))}"
         )
+    lines.extend(_format_health_lines(s.get("health") or {}))
     return "\n".join(lines)
+
+
+def _format_health_lines(health: dict[str, Any]) -> list[str]:
+    """Compact observe-only health block: raw observations, never verdicts.
+
+    ``estimator=unknown age=n/a``  — never received (all-null);
+    ``estimator=observed age=0.2s`` — fresh EKF_STATUS_REPORT;
+    ``estimator=unknown cached_age=30.0s`` — stale cache retained for
+    explainability (cached data is history, not a current verdict).
+    """
+
+    def _mask(value: Any) -> str:
+        return f"0x{value:x}" if isinstance(value, int) else "n/a"
+
+    estimator = health.get("estimator") or {}
+    sensors = health.get("sensors") or {}
+    prearm = health.get("prearm") or {}
+    status = estimator.get("status") or "unknown"
+    age = estimator.get("age_s")
+    if age is None:
+        estimator_text = "estimator=unknown age=n/a"
+    elif status == "observed":
+        estimator_text = f"estimator=observed age={age:.1f}s"
+    else:
+        estimator_text = f"estimator=unknown cached_age={age:.1f}s"
+    if estimator.get("flags_mask") is not None:
+        estimator_text += f" flags={_mask(estimator.get('flags_mask'))}"
+    lines = [f"health     : {estimator_text}"]
+    lines.append(
+        f"             sensors={_mask(sensors.get('present'))}"
+        f"/{_mask(sensors.get('enabled'))}"
+        f"/{_mask(sensors.get('health'))}"
+        f"  age={_fmt_age(sensors.get('age_s'))}"
+    )
+    message = prearm.get("last_message")
+    if message:
+        truncated = message[:48] + "…" if len(message) > 48 else message
+        prearm_text = f"{truncated} (sev={prearm.get('severity')})"
+    else:
+        prearm_text = "n/a"
+    lines.append(f"             prearm={prearm_text}  age={_fmt_age(prearm.get('age_s'))}")
+    return lines
 
 
 def _format_command(r: dict[str, Any]) -> str:

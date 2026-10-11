@@ -510,6 +510,34 @@ download 的 home-aware 语义一致），mock 测试钉住 count 0/1 →
 mission pause/resume/stop/set-current 仍属 Issue #21 方案；运行中任务的
 RTL supersession（operation 语义）已如上验证。
 
+## 8j. Health observation 验收（observe-only v1，已运行）
+
+`status --json` 的 `health` 块已在隔离的 loopback ArduCopter 实例上
+验收（`tests/test_health_sitl.py`，3 个测试；instance 1，
+`tcp:127.0.0.1:5770`；fixture 只执行 `status` / `telemetry` 查询与
+daemon 生命周期管理——**本模块不发送任何状态改变命令**）。实测行为：
+
+1. **EKF_STATUS_REPORT 需要显式订阅**：generic `EXTENDED_STATUS`
+   data-stream 请求下 15 s 内 0 条（探针实测）；请求
+   `MAV_CMD_SET_MESSAGE_INTERVAL(EKF_STATUS_REPORT=193,
+   500000 µs / 500 ms / 2 Hz)` 后以 ~2 Hz 到达——这是
+   遥测流订阅，不是飞行控制；失败时 health 保持诚实的 unknown。
+2. **reader 白名单**：adapter 的 `recv_match` 按 `_SUBSCRIBED` 类型
+   过滤——EKF_STATUS_REPORT / STATUSTEXT 已加入订阅；此前的丢弃导致
+   estimator 停留 unknown（loopback 调试定位）。
+3. **estimator 观测**：disarmed 地面自旋状态观察到 mask `0x33F`
+   （attitude + 水平/垂直速度 + 绝对/相对位置 + 预测位置——收敛 EKF
+   的预期 flag 集），age ~0.4 s；原始 flag 掩码 + 方言命名 + 六个方差
+   浮点全部落盘。
+4. **sensors bitmask**：SYS_STATUS 以 2 Hz 到达，present/enabled/health
+   原始整数直接呈现（无哨兵映射，0 是合法原始值）。
+5. **诚实性**：`status` 只取 `unknown | observed`；无任何
+   healthy/prearm_passed 推断；STATUSTEXT 在健康启动时无 arming-check
+   前缀——`prearm` 保持 null（不推断 ready）。
+
+Guard 回归：mock 测试断言带"惊悚"health 数据与不带时 arm /
+mission-start 判定完全一致——health 数据不能允许或拒绝任何命令。
+
 ## 9. 退出码总表
 
 | 退出码 | 含义 |

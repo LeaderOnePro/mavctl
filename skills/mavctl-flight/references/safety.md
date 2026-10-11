@@ -109,6 +109,15 @@ ArduCopter-SITL-validated (isolated no-MAVProxy loopback instance,
 automated in `tests/test_mission_execution_sitl.py`); no real-aircraft
 claim.
 
+`status --json` also carries an observe-only `health` block: raw
+`EKF_STATUS_REPORT` flags/variances, raw `SYS_STATUS` sensor bitmasks,
+and the most recent `PreArm:`/`Arm:`/`PreArm_EKF:` STATUSTEXT
+diagnostic. `estimator.status` is `unknown` or `observed` only —
+`unknown` never means healthy and a stale cached observation is history,
+not permission. There is no health CLI command, no health guard, and
+`MAV_CMD_RUN_PREARM_CHECKS` is never sent; ArduPilot's own pre-arm
+checks remain the final authority.
+
 mavctl talks to the vehicle under its own GCS identity (default source
 system 254, `--source-system` on `daemon start`) so it does not share an
 on-wire identity with the GCS it was validated against (MAVProxy 1.8.74,

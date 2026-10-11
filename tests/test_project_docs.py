@@ -23,6 +23,12 @@ _AGENTS_MD = (_ROOT / "AGENTS.md").read_text(encoding="utf-8")
 _PHASE3B_DESIGN = (_ROOT / "docs" / "design" / "mission-execution-phase3b.md").read_text(
     encoding="utf-8"
 )
+_HEALTH_DESIGN = (_ROOT / "docs" / "design" / "vehicle-health-prearm-v1.md").read_text(
+    encoding="utf-8"
+)
+_SITL_ACCEPTANCE_PHASE2 = (_ROOT / "docs" / "SITL_ACCEPTANCE_PHASE2.md").read_text(
+    encoding="utf-8"
+)
 
 _SUPPORTED_COMMANDS = frozenset(
     {"status", "telemetry", "arm", "disarm", "mode", "takeoff", "land", "rtl",
@@ -478,6 +484,35 @@ def test_agents_md_records_merge_commit_policy() -> None:
         "Do not automatically delete feature branches after merge unless "
         "explicitly requested" in normalized
     )
+
+
+def test_health_docs_state_ekf_stream_interval_facts() -> None:
+    """The health documents must record the EKF stream request with the
+    real units: message id 193 (EKF_STATUS_REPORT), a 500000-microsecond
+    (500 ms) interval at 2 Hz — never the erroneous "500 µs" shorthand."""
+    corpus = f"{_HEALTH_DESIGN}\n{_SITL_ACCEPTANCE_PHASE2}"
+    assert "EKF_STATUS_REPORT" in corpus
+    assert "MAV_CMD_SET_MESSAGE_INTERVAL" in corpus
+    assert "500000" in corpus
+    assert "2 Hz" in corpus
+    # the erroneous shorthand must never return
+    assert "500 µs" not in corpus
+    assert "500µs" not in corpus
+
+
+def test_readme_health_observation_is_observe_only() -> None:
+    """The READMEs must present health as observe-only: no verdicts, no
+    health CLI, no guard, never sending RUN_PREARM_CHECKS, ArduPilot as
+    the final pre-arm authority, and no real-aircraft claim."""
+    for readme in (_README, _ZH_README):
+        assert "health" in readme
+        assert "observe-only" in readme or "observe-only" in readme
+        assert "MAV_CMD_RUN_PREARM_CHECKS" in readme
+        assert "tests/test_health_observation.py" in readme
+        assert "tests/test_health_sitl.py" in readme
+    assert "never claims healthy" in _README or "从不宣称 healthy" in _ZH_README
+    # the unimplemented surface stays honestly named
+    assert "health guard" in _README or "pre-arm guard" in _README
 
 
 def test_readme_mission_section_is_ardupilot_first_and_sitl_only() -> None:
