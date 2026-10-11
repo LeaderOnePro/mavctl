@@ -5,6 +5,13 @@ or ``adapter``.
 """
 
 from mavctl.models.commands import MAV_RESULT_NAMES, CommandOutcome, WaitStatus
+from mavctl.models.health import (
+    ESTIMATOR_STALE_AFTER_S,
+    EstimatorObservation,
+    HealthObservation,
+    PrearmObservation,
+    SensorObservation,
+)
 from mavctl.models.link import (
     DEFAULT_GCS_SOURCE_COMPONENT,
     DEFAULT_GCS_SOURCE_SYSTEM,
@@ -63,6 +70,7 @@ __all__ = [
     "ARDUPILOT_HOME_SLOT_SEQ",
     "DEFAULT_GCS_SOURCE_COMPONENT",
     "DEFAULT_GCS_SOURCE_SYSTEM",
+    "ESTIMATOR_STALE_AFTER_S",
     "MAV_RESULT_NAMES",
     "MISSION_COMMAND_LAND",
     "MISSION_COMMAND_RETURN_TO_LAUNCH",
@@ -80,8 +88,10 @@ __all__ = [
     "CommandOutcome",
     "DaemonResponse",
     "DownloadedMissionV1",
+    "EstimatorObservation",
     "ExitCode",
     "GpsInfo",
+    "HealthObservation",
     "HomePosition",
     "MissionExecutionState",
     "MissionItem",
@@ -96,8 +106,10 @@ __all__ = [
     "OperationSnapshot",
     "OperationState",
     "Position",
+    "PrearmObservation",
     "RpcError",
     "RpcRequest",
+    "SensorObservation",
     "Telemetry",
     "UnsupportedRemoteMissionItem",
     "VehicleState",

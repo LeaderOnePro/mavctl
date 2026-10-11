@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field
 
+from mavctl.models.health import HealthObservation
+
 
 class Battery(BaseModel):
     """Power system summary derived from ``SYS_STATUS`` / ``BATTERY_STATUS``."""
@@ -89,3 +91,7 @@ class VehicleState(BaseModel):
     home_position_age_s: float | None = None
     landed_state_age_s: float | None = None
     mission: MissionExecutionState = Field(default_factory=MissionExecutionState)
+    # Health observations (Issue #4, observe-only v1): raw vehicle-reported
+    # EKF / sensor-bitmask / prearm-diagnostic data. Starts fully unknown;
+    # never gates any command (see mavctl/models/health.py).
+    health: HealthObservation = Field(default_factory=HealthObservation)
