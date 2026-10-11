@@ -78,6 +78,11 @@ _SUBSCRIBED = (
     "MISSION_ACK",
     "MISSION_CURRENT",
     "MISSION_ITEM_REACHED",
+    # Health observations (Issue #4, observe-only v1). STATUSTEXT is
+    # subscribed for arming-check diagnostics; both are dispatched via
+    # _HANDLERS and never enter the mission transaction inbox.
+    "EKF_STATUS_REPORT",
+    "STATUSTEXT",
 )
 
 # Mission messages that participate in upload/download/clear transactions.
