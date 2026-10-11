@@ -379,8 +379,9 @@ A future implementation should follow the existing mavctl conventions:
   pymavlink layer drops them (loopback-debugged);
 - the stream request is **required**: EKF_STATUS_REPORT does not arrive
   with the generic `MAV_DATA_STREAM_EXTENDED_STATUS` request (probed: 0
-  messages in 15 s); after `MAV_CMD_SET_MESSAGE_INTERVAL(193, 500 µs)`
-  it flows at ~2 Hz on ArduCopter SITL;
+  messages in 15 s); after `MAV_CMD_SET_MESSAGE_INTERVAL(
+  EKF_STATUS_REPORT=193, 500000 µs / 500 ms / 2 Hz)` it flows at
+  ~2 Hz on ArduCopter SITL;
 - live behavior on ArduCopter SITL (disarmed, on ground): estimator
   observed with mask `0x33F` (attitude + velocities + horizontal/vertical
   position + predicted position — the expected flag set for a converged

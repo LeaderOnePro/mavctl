@@ -519,7 +519,8 @@ daemon 生命周期管理——**本模块不发送任何状态改变命令**）
 
 1. **EKF_STATUS_REPORT 需要显式订阅**：generic `EXTENDED_STATUS`
    data-stream 请求下 15 s 内 0 条（探针实测）；请求
-   `MAV_CMD_SET_MESSAGE_INTERVAL(193, 500 µs)` 后以 ~2 Hz 到达——这是
+   `MAV_CMD_SET_MESSAGE_INTERVAL(EKF_STATUS_REPORT=193,
+   500000 µs / 500 ms / 2 Hz)` 后以 ~2 Hz 到达——这是
    遥测流订阅，不是飞行控制；失败时 health 保持诚实的 unknown。
 2. **reader 白名单**：adapter 的 `recv_match` 按 `_SUBSCRIBED` 类型
    过滤——EKF_STATUS_REPORT / STATUSTEXT 已加入订阅；此前的丢弃导致
