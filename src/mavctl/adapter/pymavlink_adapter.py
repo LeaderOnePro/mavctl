@@ -36,7 +36,10 @@ from mavctl.models import (
     Battery,
     CommandOutcome,
     DownloadedMissionV1,
+    ESTIMATOR_STALE_AFTER_S,
+    EstimatorObservation,
     GpsInfo,
+    HealthObservation,
     HomePosition,
     MissionExecutionState,
     MissionItem,
@@ -44,6 +47,8 @@ from mavctl.models import (
     MissionOutcome,
     MissionV1,
     Position,
+    PrearmObservation,
+    SensorObservation,
     Telemetry,
     VehicleState,
     Velocity,
@@ -153,6 +158,33 @@ _MISSION_STATE_LABELS = {
     4: "paused",
     5: "complete",
 }
+
+# EKF_STATUS_REPORT flag names, taken directly from the loaded dialect's
+# EKF_STATUS_FLAGS enum (ardupilotmega). Bits absent from the dialect are
+# never named — they survive only inside the raw mask.
+_EKF_FLAG_NAMES: dict[int, str] = {
+    int(value): entry.name
+    for value, entry in getattr(
+        mavutil.mavlink, "enums", {}
+    ).get("EKF_STATUS_FLAGS", {}).items()
+}
+
+
+def _decode_ekf_flags(mask: int) -> list[str]:
+    """Names of the dialect-known bits set in ``mask`` (unknown bits are
+    intentionally not named; they remain visible in the raw mask)."""
+
+    return [
+        _EKF_FLAG_NAMES[1 << bit]
+        for bit in range(16)
+        if mask & (1 << bit) and (1 << bit) in _EKF_FLAG_NAMES
+    ]
+
+
+# STATUSTEXT prefixes treated as arming-check diagnostics (observe-only).
+# No specific text string is a stable API — see
+# docs/design/vehicle-health-prearm-v1.md §B.
+_PREARM_TEXT_PREFIXES = ("PreArm:", "Arm:", "PreArm_EKF:")
 
 _GPS_FIX_LABELS = {
     0: "no_gps",
@@ -298,6 +330,24 @@ class PymavlinkAdapter:
         self._mission_execution: MissionExecutionState | None = None
         self._mission_execution_ts_mono: float | None = None
 
+        # Health observations (Issue #4, observe-only v1): raw values from
+        # the locked autopilot only. None = never received; nothing here
+        # gates a command or infers a health verdict.
+        self._ekf_flags_mask: int | None = None
+        self._ekf_flags_names: list[str] = []
+        self._ekf_variances: tuple[
+            float, float, float, float, float, float
+        ] | None = None
+        self._ekf_ts_mono: float | None = None
+        self._sensors_present: int | None = None
+        self._sensors_enabled: int | None = None
+        self._sensors_health: int | None = None
+        self._sensors_ts_mono: float | None = None
+        self._prearm_last_message: str | None = None
+        self._prearm_severity: int | None = None
+        self._prearm_ts_mono: float | None = None
+        self._ekf_stream_requested = False
+
         # Mission protocol transactions. _mission_lock serializes whole
         # upload/download/clear sessions; _mission_cond + _mission_inbox are
         # the reader-thread -> transaction rendezvous. Messages are only
@@ -370,6 +420,52 @@ class PymavlinkAdapter:
 
             age = self._heartbeat_age_locked()
             connected = age is not None and age <= self._heartbeat_timeout_s
+
+            # Health observations (observe-only v1): fresh EKF data reads
+            # "observed"; once older than ESTIMATOR_STALE_AFTER_S the
+            # current verdict degrades to "unknown" while the cached raw
+            # fields stay visible for explainability. Never a health
+            # judgement; never gates a command.
+            if self._ekf_ts_mono is None:
+                estimator = EstimatorObservation()
+            else:
+                ekf_age = _age(self._ekf_ts_mono)
+                estimator = EstimatorObservation(
+                    status=(
+                        "observed"
+                        if ekf_age is not None
+                        and ekf_age <= ESTIMATOR_STALE_AFTER_S
+                        else "unknown"
+                    ),
+                    last_status="observed",
+                    flags=list(self._ekf_flags_names),
+                    flags_mask=self._ekf_flags_mask,
+                    velocity_variance=self._ekf_variances[0],
+                    pos_horiz_variance=self._ekf_variances[1],
+                    pos_vert_variance=self._ekf_variances[2],
+                    compass_variance=self._ekf_variances[3],
+                    terrain_alt_variance=self._ekf_variances[4],
+                    airspeed_variance=self._ekf_variances[5],
+                    age_s=ekf_age,
+                )
+            if self._sensors_ts_mono is not None:
+                sensors = SensorObservation(
+                    present=self._sensors_present,
+                    enabled=self._sensors_enabled,
+                    health=self._sensors_health,
+                    age_s=_age(self._sensors_ts_mono),
+                )
+            else:
+                sensors = SensorObservation()
+            if self._prearm_ts_mono is not None:
+                prearm = PrearmObservation(
+                    last_message=self._prearm_last_message,
+                    severity=self._prearm_severity,
+                    age_s=_age(self._prearm_ts_mono),
+                )
+            else:
+                prearm = PrearmObservation()
+
             return VehicleState(
                 connected=connected,
                 connection_string=self._connection_string,
@@ -398,6 +494,9 @@ class PymavlinkAdapter:
                     )
                     if self._mission_execution is not None
                     else MissionExecutionState()
+                ),
+                health=HealthObservation(
+                    estimator=estimator, sensors=sensors, prearm=prearm
                 ),
             )
 
@@ -1476,6 +1575,28 @@ class PymavlinkAdapter:
                 0.0,
                 0.0,
             )
+        # EKF_STATUS_REPORT is not covered by the generic EXTENDED_STATUS
+        # data-stream request (loopback-probed: zero messages in 15 s
+        # without an explicit interval, ~2 Hz with one). Ask for it with
+        # the same observation-only SET_MESSAGE_INTERVAL pattern — a
+        # telemetry subscription, not a flight command; failure leaves the
+        # health block honestly unknown and never breaks the link.
+        if not self._ekf_stream_requested:
+            self._ekf_stream_requested = True
+            with contextlib.suppress(Exception), self._send_lock:
+                self._master.mav.command_long_send(
+                    self._target_system,
+                    self._target_component,
+                    mavutil.mavlink.MAV_CMD_SET_MESSAGE_INTERVAL,
+                    0,  # confirmation
+                    float(mavutil.mavlink.MAVLINK_MSG_ID_EKF_STATUS_REPORT),
+                    500000.0,  # 2 Hz in microseconds
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                )
 
     def _flightmode_string(self, msg: Any) -> str | None:
         master = self._master
@@ -1497,9 +1618,16 @@ class PymavlinkAdapter:
             current_a=(current / 100.0) if current >= 0 else None,
             remaining_pct=remaining if remaining >= 0 else None,
         )
+        now = time.monotonic()
         with self._lock:
             self._battery = battery
-            self._battery_ts_mono = time.monotonic()
+            self._battery_ts_mono = now
+            # Raw sensor bitmasks (observe-only v1): stored verbatim — no
+            # health verdict, no sentinel mapping (0 is a valid raw value).
+            self._sensors_present = int(msg.onboard_control_sensors_present)
+            self._sensors_enabled = int(msg.onboard_control_sensors_enabled)
+            self._sensors_health = int(msg.onboard_control_sensors_health)
+            self._sensors_ts_mono = now
 
     def _on_global_position(self, msg: Any) -> None:
         if not self._is_locked_target(msg):
@@ -1606,6 +1734,58 @@ class PymavlinkAdapter:
             self._mission_execution = mission
             self._mission_execution_ts_mono = time.monotonic()
 
+    def _on_ekf_status_report(self, msg: Any) -> None:
+        """Raw EKF observation from the locked autopilot only.
+
+        Stores the raw flag mask, dialect-known flag names, and the six
+        variance floats. No health verdict is derived (v1 observe-only);
+        a missing message is never interpreted as unhealthy — the block
+        simply stays ``unknown``.
+        """
+
+        if not self._is_locked_target(msg):
+            return
+        mask = int(msg.flags) & 0xFFFF
+        variances = (
+            float(msg.velocity_variance),
+            float(msg.pos_horiz_variance),
+            float(msg.pos_vert_variance),
+            float(msg.compass_variance),
+            float(msg.terrain_alt_variance),
+            float(msg.airspeed_variance),
+        )
+        with self._lock:
+            self._ekf_flags_mask = mask
+            self._ekf_flags_names = _decode_ekf_flags(mask)
+            self._ekf_variances = variances
+            self._ekf_ts_mono = time.monotonic()
+
+    def _on_statustext(self, msg: Any) -> None:
+        """Arming-check diagnostic observation from the locked autopilot.
+
+        Keeps only the most recent complete message whose text starts with
+        a known arming-check prefix. Chunked messages (nonzero
+        ``chunk_seq`` or a nonzero chunk ``id`` in newer dialects) are
+        conservatively ignored — v1 never assembles partial text. The
+        absence of a message is never read as pre-arm success.
+        """
+
+        if not self._is_locked_target(msg):
+            return
+        text = getattr(msg, "text", None)
+        if not isinstance(text, str):
+            return
+        if getattr(msg, "chunk_seq", 0):
+            return
+        if getattr(msg, "id", 0):
+            return
+        if not text.startswith(_PREARM_TEXT_PREFIXES):
+            return
+        with self._lock:
+            self._prearm_last_message = text
+            self._prearm_severity = int(msg.severity)
+            self._prearm_ts_mono = time.monotonic()
+
     def _on_home_position(self, msg: Any) -> None:
         if not self._is_locked_target(msg):
             return
@@ -1630,4 +1810,6 @@ _HANDLERS: dict[str, Any] = {
     "EXTENDED_SYS_STATE": PymavlinkAdapter._on_extended_sys_state,
     "HOME_POSITION": PymavlinkAdapter._on_home_position,
     "MISSION_CURRENT": PymavlinkAdapter._on_mission_current,
+    "EKF_STATUS_REPORT": PymavlinkAdapter._on_ekf_status_report,
+    "STATUSTEXT": PymavlinkAdapter._on_statustext,
 }
