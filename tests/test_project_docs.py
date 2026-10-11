@@ -480,6 +480,21 @@ def test_agents_md_records_merge_commit_policy() -> None:
     )
 
 
+def test_readme_health_observation_is_observe_only() -> None:
+    """The READMEs must present health as observe-only: no verdicts, no
+    health CLI, no guard, never sending RUN_PREARM_CHECKS, ArduPilot as
+    the final pre-arm authority, and no real-aircraft claim."""
+    for readme in (_README, _ZH_README):
+        assert "health" in readme
+        assert "observe-only" in readme or "observe-only" in readme
+        assert "MAV_CMD_RUN_PREARM_CHECKS" in readme
+        assert "tests/test_health_observation.py" in readme
+        assert "tests/test_health_sitl.py" in readme
+    assert "never claims healthy" in _README or "从不宣称 healthy" in _ZH_README
+    # the unimplemented surface stays honestly named
+    assert "health guard" in _README or "pre-arm guard" in _README
+
+
 def test_readme_mission_section_is_ardupilot_first_and_sitl_only() -> None:
     # Phase 3A wording invariants: ArduPilot-first JSON, SITL-validated only,
     # no real-aircraft claim, locally modified ArduPilot provenance.

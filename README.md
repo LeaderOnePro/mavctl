@@ -103,6 +103,20 @@ ArduCopter instance (automated in `tests/test_mission_execution_sitl.py`:
 guard negative paths, the start milestone, idempotent re-start, RTL
 supersession); no real-aircraft claim.
 
+**Health observation (0.4.1.dev0, observe-only; ArduCopter SITL-validated)**:
+`status --json` carries a `health` block with raw vehicle-reported
+observations — the estimator (`EKF_STATUS_REPORT`: raw flag mask, dialect
+flag names, variance floats, independent monotonic age), raw `SYS_STATUS`
+sensor present/enabled/health bitmasks, and the most recent
+`PreArm:`/`Arm:`/`PreArm_EKF:` diagnostic from STATUSTEXT. It is strictly
+observe-only: no health CLI command, no health/pre-arm guard, and
+`MAV_CMD_RUN_PREARM_CHECKS` is never sent. `estimator.status` is
+`unknown` or `observed` — it never claims healthy; `unknown` (never
+received or stale) is not a health judgement, and a stale cached
+observation is history, not permission. ArduPilot's own pre-arm checks
+remain the final authority. Automated in `tests/test_health_observation.py`
+(mock) and `tests/test_health_sitl.py` (live loopback observation).
+
 Not implemented — current scope only, not a roadmap promise:
 
 ```text

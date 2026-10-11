@@ -60,6 +60,7 @@ mavctl 的定位：**不是**自动驾驶仪的替代品，而是 agent 与飞�
 | Phase 3A | **0.3.0**（PRs #27/#28/#29，tag `v0.3.0`） | `mission upload/download/clear` | Mission JSON v1（takeoff/waypoint/land/rtl）无损上传下载；clear 经计数读回验证；对共享 MAVProxy 拓扑的 relay 残留做了收敛 |
 | Phase 3B-0 | **0.4.0**（PR #35） | `operation get <id>`；`takeoff/land/rtl --wait` | 长命令的等待变成 daemon 侧的"可观察 operation"：命令被 ACK 后锁立即释放，等待期间车还能被指挥；后到的命令会**取代**进行中的等待（superseded ≠ 被取消） |
 | Phase 3B-1 | **0.4.0**（PR #36；SITL conformance 见 SITL_ACCEPTANCE_PHASE2 §8i） | `mission start --confirm [--wait --timeout]` | 向已具备（已上传任务 + armed + 新鲜链路）的载具发送启动指令；ArduCopter 上会把车切到 AUTO 开始执行；`--wait` 只观察**启动里程碑**（AUTO + mission ACTIVE），不等整趟任务；已在跑时重复调用是幂等 no-op |
+| Health observe-only v1 | 0.4.1.dev0（未发布；Issue #4） | `status --json` 的 `health` 块 | 只观察不判定：EKF_STATUS_REPORT 原始 flag 掩码/方差、SYS_STATUS 传感器 bitmask、最近一条 PreArm 诊断；`unknown` ≠ healthy，无 health CLI、无 guard，绝不发送 RUN_PREARM_CHECKS |
 
 附：0.2.2 的 daemon 一致性修正（心跳单阈值、mode TOCTOU）随 0.3.0 一并发布。
 0.4.0 通过 GitHub OIDC 正式发布 PyPI（tag `v0.4.0` + GitHub Release）。
@@ -98,7 +99,7 @@ mavctl
 | --- | --- | --- |
 | mission pause / resume / stop / set-current | 未实现 | Phase 3B 剩余范围（design §C.2） |
 | operation cancel | 未实现 | Issue #21（supersession 已随 0.4.0 发布，取消面仍开） |
-| health / pre-arm runtime（EKF 观察等） | 未实现 | Issue #4：观察设计已合并（PR #39），observe-only 路线 |
+| health guard（advisory / hard rejection） | 未实现（observe-only v1 观察已实现） | Issue #4：observe → validate → advisory → 可能的 hard guard |
 | Windows 原生 daemon IPC | 未实现 | Issue #19：design-only |
 | parameters / 日志下载 / geofence / 固件刷写 / 多载具 | 未实现 | Phase 4 候选（roadmap §C） |
 | Agent Harness（独立仓库） | 未启动 | roadmap §D 候选，无仓库 |
@@ -120,7 +121,7 @@ mavctl
 
 | 候选 | 当前状态 | 前置依赖 | 量级 |
 | --- | --- | --- | --- |
-| Health runtime（observe-only v1） | 设计已合并（Issue #4），零实现 | EKF 流在 SITL 的实际到达验证；flag→状态映射表取证 | 小-中 |
+| Health validate/advisory（v1 observe-only 已完成） | 观察已实现并经 SITL 验证（2 Hz） | 跨固件版本取证 flag→状态映射表 | 中 |
 | mission pause/resume/stop | 未实现 | Issue #21 取消契约（与 supersession 的关系） | 中 |
 | Windows 原生 daemon IPC | design-only（Issue #19） | 平台决策（命名管道/服务形态） | 中-大 |
 | Harness POC（独立仓库） | 候选，无仓库 | mavctl CLI/--json 契约已足够稳定 | 中 |

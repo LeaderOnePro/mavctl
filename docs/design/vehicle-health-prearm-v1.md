@@ -1,8 +1,12 @@
 # Design: Vehicle Health and Pre-Arm Observation (v1 candidate)
 
-Status: **design research only** — nothing in this document is implemented.
-No runtime health guard exists; `arm` / `mission start` behavior is unchanged
-by this document. Tracking issue: #4. The [FACT]/[DECIDED]/[OPEN]/[NON-GOAL]
+Status: **observe-only v1 implemented and SITL-validated** (0.4.1.dev0):
+`status --json` carries the raw `health` block (estimator / sensors /
+prearm) per the contract below; **no health CLI command, no
+health/pre-arm guard, no `MAV_CMD_RUN_PREARM_CHECKS`** — `arm` /
+`mission start` behavior is unchanged by this work. The guard ladder
+(observe → validate → advisory → possible hard guard) stays at step one.
+Tracking issue: #4. The [FACT]/[DECIDED]/[OPEN]/[NON-GOAL]
 discipline matches docs/design/mission-protocol-v1.md and
 docs/design/mission-execution-phase3b.md.
 
@@ -53,7 +57,7 @@ and messages; `EKF_STATUS_REPORT` lives in **ardupilotmega.xml**.
 ### EKF_STATUS_REPORT (id 193)
 
 - `[FACT]` **ardupilotmega.xml extension** (not MAVLink common): fields
-  `flags (uint16, EKF_STATUS_FLAGS bitmask)` + 7 variance floats
+  `flags (uint16, EKF_STATUS_FLAGS bitmask)` + 6 variance floats
   (velocity, pos_horiz, pos_vert, compass, terrain_alt, airspeed).
 - `[FACT]` direction: vehicle → GCS. ArduPilot sends it via
   `AP::ahrs().send_ekf_status_report()` from the GCS message scheduler
@@ -201,6 +205,15 @@ material for a future implementation phase.
   }
 }
 ```
+
+v1 implementation contract (0.4.1.dev0): `estimator.status` is
+restricted to the literals `unknown | observed` — "observed" only ever
+means "an EKF_STATUS_REPORT arrived"; no `healthy` / `degraded` verdict
+is emitted yet, so `last_status` likewise only takes `observed` (or
+`null`). The healthy/degraded classification is future work behind the
+flag→state mapping table (§H.2). Chunked STATUSTEXT messages (nonzero
+`chunk_seq` or chunk `id`) are conservatively ignored in v1 — partial
+text is never assembled.
 
 Rules — the model deliberately separates **current verdict**, **last
 observed (possibly stale) verdict**, and **never observed**:
@@ -351,3 +364,29 @@ A future implementation should follow the existing mavctl conventions:
 7. Mission start vs arm guard integration: if a hard guard ever exists,
    does mission start inherit the same estimator policy as arm, given
    ArduCopter's mission start handler requires its own readiness?
+
+## I. v1 implementation record (0.4.1.dev0)
+
+- models: `mavctl/models/health.py` (`HealthObservation`,
+  `EstimatorObservation`, `SensorObservation`, `PrearmObservation`) on
+  `VehicleState.health`;
+- adapter: `_on_ekf_status_report` / `_on_statustext` handlers plus raw
+  `SYS_STATUS` sensor bitmasks; locked-source filtering; unknown flag
+  bits survive in the raw mask (`_EKF_FLAG_NAMES` comes from the loaded
+  dialect enum);
+- the reader loop subscribes by message-type whitelist (`_SUBSCRIBED`) —
+  EKF_STATUS_REPORT and STATUSTEXT were added there, otherwise the
+  pymavlink layer drops them (loopback-debugged);
+- the stream request is **required**: EKF_STATUS_REPORT does not arrive
+  with the generic `MAV_DATA_STREAM_EXTENDED_STATUS` request (probed: 0
+  messages in 15 s); after `MAV_CMD_SET_MESSAGE_INTERVAL(193, 500 µs)`
+  it flows at ~2 Hz on ArduCopter SITL;
+- live behavior on ArduCopter SITL (disarmed, on ground): estimator
+  observed with mask `0x33F` (attitude + velocities + horizontal/vertical
+  position + predicted position — the expected flag set for a converged
+  EKF at rest), sensors bitmasks populated, boot STATUSTEXT carries no
+  arming-check prefix (honest `null`);
+- tests: `tests/test_health_observation.py` (mock, fake monotonic
+  clocks) and `tests/test_health_sitl.py` (loopback, twice-consecutive
+  green); guard regression asserts health data cannot change arm /
+  mission-start decisions.

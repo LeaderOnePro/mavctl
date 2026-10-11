@@ -96,6 +96,18 @@ ArduPilot checkout（revision `4c98c9221a`；唯一经审阅的源码修改是
 `AP_FWVersion.h` 中的 macOS host-build/linker workaround，不影响
 mission/GCS 运行时代码）。
 
+**Health observation（0.4.1.dev0，observe-only；ArduCopter SITL 验证）**：
+`status --json` 携带 `health` 块，承载载具上报的原始观测——estimator
+（`EKF_STATUS_REPORT`：原始 flag 掩码、方言 flag 名称、方差浮点、独立的
+单调时钟 age）、`SYS_STATUS` 的 sensors present/enabled/health 原始
+bitmask，以及 STATUSTEXT 中最近一条 `PreArm:`/`Arm:`/`PreArm_EKF:` 诊断。
+严格 observe-only：没有 health CLI 命令、没有 health/pre-arm guard、
+绝不发送 `MAV_CMD_RUN_PREARM_CHECKS`。`estimator.status` 只取
+`unknown` 或 `observed`——从不宣称 healthy；`unknown`（从未收到或已
+过期）不是健康判定，过期的缓存观测是历史而非许可。ArduPilot 自身的
+pre-arm 检查仍是最终权威。自动化于 `tests/test_health_observation.py`
+（mock）与 `tests/test_health_sitl.py`（loopback 实测）。
+
 未实现——仅描述当前范围，不是路线图承诺：
 
 ```text
