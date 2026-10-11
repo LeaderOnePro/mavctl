@@ -273,13 +273,22 @@ Provenance:
 The next development version must move forward from 0.4.0, for example
 `0.4.1.dev0`. Never re-publish an existing version number.
 
-## Development state: 0.4.1.dev0
+## Release state before v0.4.1
 
-mavctl `0.4.1.dev0` is unreleased development work on the
-`fix/mission-help-0.4.1` branch (stale mission command-group help text).
+The `release/0.4.1` branch prepares the v0.4.1 release: `pyproject.toml`
+promotes the package version from `0.4.1.dev0` to `0.4.1` on top of the
+merged Health Observation work.
 
-- 0.4.0 is the latest production PyPI release;
-- 0.4.1.dev0 is unreleased development work — no publication claim exists
-  anywhere;
-- no `v0.4.1` tag exists yet;
-- never re-publish an existing version number.
+- PyPI publication has **not** happened: production releases remain 0.2.0,
+  0.2.1, 0.3.0 and 0.4.0, and no `v0.4.1` tag has been created;
+- main feature: **Health Observe-only Runtime v1** — raw
+  `EKF_STATUS_REPORT` observation, raw `SYS_STATUS` sensor bitmasks, the
+  latest `PreArm:`/`Arm:` diagnostic STATUSTEXT, and independent health
+  freshness in `status --json`;
+- validation includes the mock health suite plus ArduCopter SITL
+  observation tests (passed twice consecutively on the feature branch)
+  and the non-SITL gates (ruff, mypy strict, non-SITL suite, build,
+  twine);
+- no health guard, health CLI, or `MAV_CMD_RUN_PREARM_CHECKS` behavior
+  exists or ships; no arm / mission / guard behavior changed;
+- no real-aircraft validation or support claim.
