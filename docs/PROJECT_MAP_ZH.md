@@ -4,11 +4,12 @@
 > 数据基准：main `0a5d5ca`（0.4.1.dev0 开发线）。本文件只记录已验证事实与
 > 已定方向，不包含未验证的协议结论。
 
-## 1. 生态位：Harness → mavctl → ArduPilot
+## 1. 生态位：NavWeave → mavctl → ArduPilot
 
 ```text
 ┌────────────────────────────┐
-│  Future Drone Agent Harness │   候选方向（尚无仓库，见 roadmap §D）
+│  NavWeave（未来独立仓库，    │   已命名、尚未创建；见 roadmap §D
+│  尚未创建）                  │
 │  / RL / 编排层（探索性）     │
 └─────────────┬──────────────┘
               │  通过 CLI / --json 驱动（agent-first 契约）
@@ -24,6 +25,8 @@
 │  （ArduCopter 优先）        │   SITL 验证 / 真机未验证
 └────────────────────────────┘
 ```
+
+职责分工：**NavWeave 负责任务规划与预览；mavctl 负责安全执行。**
 
 mavctl 的定位：**不是**自动驾驶仪的替代品，而是 agent 与飞控之间一层
 可审计、可解释、护栏完备的指挥通道。ArduPilot 自己的 pre-arm 检查始终
@@ -102,7 +105,7 @@ mavctl
 | health guard（advisory / hard rejection） | 未实现（observe-only v1 观察已实现） | Issue #4：observe → validate → advisory → 可能的 hard guard |
 | Windows 原生 daemon IPC | 未实现 | Issue #19：design-only |
 | parameters / 日志下载 / geofence / 固件刷写 / 多载具 | 未实现 | Phase 4 候选（roadmap §C） |
-| Agent Harness（独立仓库） | 未启动 | roadmap §D 候选，无仓库 |
+| NavWeave（未来独立仓库，尚未创建） | 未启动（已命名） | roadmap §D 候选；任务规划/预览/地图选点属于 NavWeave，mavctl 保持可独立被 CLI / Agent / shell 使用 |
 | RL / 强化学习方向 | 未启动 | roadmap §F 探索性记录 |
 
 ## 6. 验证边界与诚实声明
@@ -124,7 +127,7 @@ mavctl
 | Health validate/advisory（v1 observe-only 已完成） | 观察已实现并经 SITL 验证（2 Hz） | 跨固件版本取证 flag→状态映射表 | 中 |
 | mission pause/resume/stop | 未实现 | Issue #21 取消契约（与 supersession 的关系） | 中 |
 | Windows 原生 daemon IPC | design-only（Issue #19） | 平台决策（命名管道/服务形态） | 中-大 |
-| Harness POC（独立仓库） | 候选，无仓库 | mavctl CLI/--json 契约已足够稳定 | 中 |
+| NavWeave POC（未来独立仓库，尚未创建） | 已命名，未启动 | mavctl CLI/--json 契约已足够稳定；NavWeave 不直接 import pymavlink、不重实现 mavctl guards/ACK handling/mission protocol/operation model；初期仅 SITL | 中 |
 
 （顺序不代表承诺；任何 health 相关工作都遵循
 `docs/design/vehicle-health-prearm-v1.md` 的渐进路线：
@@ -142,3 +145,9 @@ observe → validate → advisory → 可能的 hard guard。）
   `docs/SKILLS_CLI_ACCEPTANCE.md`
 - 发布：`docs/PUBLISHING.md`（版本历史 + OIDC 流程）
 - Agent Skill：`skills/mavctl-flight/`（安装：`npx skills add LeaderOnePro/mavctl -y -g`）
+
+---
+
+> 注：NavWeave 名称基于初步公开可用性调研选定。GitHub、npm 和 PyPI 未
+> 发现明显冲突信号；域名注册状态和正式商标检索仍需由项目所有者在创建
+> 仓库或商业化前自行确认。仓库尚未创建。

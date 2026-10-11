@@ -4,8 +4,14 @@ Status: **design/roadmap document — statements below are either recorded fact
 (current state) or explicitly marked candidate/unresolved direction. Nothing
 in the future sections is implemented or committed to a date.**
 
-Companion repo idea: a standalone "drone-domain Agent Harness" is a
-**candidate** (section D). No repository has been created.
+Companion repo idea: a standalone drone-domain Agent Harness is a
+**candidate** (section D), now named **NavWeave** (future independent
+repository, not yet created). NavWeave plans and reviews missions; mavctl
+executes them safely. The NavWeave name was selected after preliminary
+public availability research. No obvious GitHub, npm, or PyPI conflict
+was found during that research. Domain registration status and formal
+trademark clearance remain owner responsibilities before repository
+creation or commercial use. No repository has been created.
 
 ---
 
@@ -108,7 +114,7 @@ list below is kept as designed.
 
   Rationale: a mission is a high-risk, auditable object. A file input is
   previewable, reproducible, reviewable, and trivially produced by a future
-  Harness export. stdin and other import formats may be discussed later,
+  NavWeave export. stdin and other import formats may be discussed later,
   after a concrete need exists — they are **not** Phase 3A capabilities.
 - **Safety constraints** (planned):
 
@@ -198,37 +204,41 @@ list below is kept as designed.
 
 ---
 
-## D. Future Drone Agent Harness concept (candidate — no repo created)
+## D. NavWeave — Drone Agent Harness concept (named; repo not yet created)
 
-A **separate, future repository**. Candidate layering:
+A **separate, future repository** named **NavWeave** (selected 2026-10;
+the repository does not exist yet). Candidate layering:
 
 ```text
-User / map / conversation UI          ← Harness (new repo)
+User / map / conversation UI          ← NavWeave (future repo, not created)
         ↓
-Agent orchestration / planning        ← Harness (new repo)
+Agent orchestration / planning        ← NavWeave (future repo, not created)
         ↓
 mavctl execution and safety layer     ← this repo (existing)
         ↓
 ArduPilot / MAVLink vehicle
 ```
 
+In one sentence: **NavWeave plans and reviews missions; mavctl executes
+them safely.**
+
 Division of responsibility (candidate design):
 
 | Layer | Responsibility |
 | --- | --- |
-| Harness UI | map click-to-waypoint, area/polygon selection, route preview, home/current-position display, mission JSON preview, **human approval** before upload/start, live status panel, conversation |
-| Harness agent | natural-language understanding, task decomposition, tool calls into mavctl, explaining results and failures to the user |
+| NavWeave UI | map click-to-waypoint, area/polygon selection, route preview, home/current-position display, mission JSON preview, **human approval** before upload/start, live status panel, conversation |
+| NavWeave agent | natural-language understanding, task decomposition, tool calls into mavctl, explaining results and failures to the user |
 | mavctl | constrained execution: guards, MAVLink transactions, mission protocol (3A/3B), exit-code contract |
 | ArduPilot | actual flight control, EKF, failsafes |
 
 Hard interface rules (candidate but strongly intended):
 
-- the Harness does **not** import pymavlink;
-- the Harness does **not** re-implement guards, ACK handling, heartbeat
+- NavWeave does **not** import pymavlink;
+- NavWeave does **not** re-implement guards, ACK handling, heartbeat
   tracking, or the mission protocol — it consumes mavctl's CLI/daemon API;
-- initially **SITL-only** target for the Harness;
+- initially **SITL-only** target for NavWeave;
 - mavctl stays independent: it must remain fully usable by humans, bash,
-  and coding agents without the Harness.
+  and coding agents without NavWeave.
 
 ## E. Maps and mission planning (candidate direction)
 
@@ -237,8 +247,8 @@ Hard interface rules (candidate but strongly intended):
   narrow Phase 3A mission-upload input boundary; it is **not** a substitute
   for a user-facing planning UI.
 - User-friendly inspection/survey/area missions need a map — that belongs
-  to the future Harness, not mavctl.
-- Candidate Harness map capabilities: click-to-waypoint, polygon/area
+  to NavWeave (the future Harness repository), not mavctl.
+- Candidate NavWeave map capabilities: click-to-waypoint, polygon/area
   selection, route preview, home/current-position display, mission JSON
   preview, human approval gate before upload/start.
 - **Unresolved**: which map SDK/tile source (license, offline tiles,
@@ -247,7 +257,7 @@ Hard interface rules (candidate but strongly intended):
 
 ## F. Agent and RL direction (exploratory — nothing decided)
 
-- A future Harness **may** use Pi or another agent runtime as the
+- NavWeave **may** use Pi or another agent runtime as the
   orchestration layer; **no runtime is currently integrated and none is
   decided**.
 - Future small-model SFT/RL **could** optimize: constrained tool choice,
@@ -257,7 +267,7 @@ Hard interface rules (candidate but strongly intended):
   attitude, or throttle commands, and must not bypass mavctl guards. The
   action space stays bounded to high-level, validated tools/schemas;
   ArduPilot remains the flight controller.
-- RL/SFT work requires a Harness + SITL benchmark to exist first; training
+- RL/SFT work requires NavWeave + a SITL benchmark to exist first; training
   design is a separate research effort after that. This document makes **no
   claim** about any specific framework, runtime, or model — those choices
   are open.
