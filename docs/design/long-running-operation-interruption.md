@@ -1,10 +1,14 @@
 # Design: Long-Running Operation Interruption (Issue #21)
 
-Status: **v1 foundation implemented** (Phase 3B-0): the operation registry,
+Status: **v1 foundation implemented and released in `0.4.0`** (Phase 3B-0):
+the operation registry,
 epoch fencing, supersession, and the non-blocking passive wait for
 `takeoff`/`land`/`rtl` are implemented; `mode --wait` is not migrated yet;
 `operation get` is implemented (read-only) while `operation cancel` remains
-an `[OPEN]` candidate; `mission start` is not implemented. Tracking issue:
+an `[OPEN]` candidate; `mission start` (0.4.0) joins the same registry —
+its WAITING observation is superseded by a later RTL/land exactly as this
+document specifies (SITL-verified, `docs/SITL_ACCEPTANCE_PHASE2.md` §8i).
+Tracking issue:
 #21 (still open — cancellation surface, ids, and conversion scope remain). Companion to `docs/design/mission-execution-phase3b.md` (§E
 analysed the same problem from the Phase 3B side; this document is the
 authoritative deep dive).

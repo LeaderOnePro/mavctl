@@ -1,7 +1,7 @@
 # Design: Phase 3B — Mission Execution, Progress Observation, and Safe Interruption
 
 Status: **mission start / observation implemented and SITL-validated**
-(Phase 3B-1, 0.4.0.dev0): `mission start --confirm [--wait] [--timeout]
+(Phase 3B-1, released in `0.4.0`): `mission start --confirm [--wait] [--timeout]
 [--dry-run]`, the `MissionExecutionState` observation (MISSION_CURRENT,
 locked source), `check_mission_start` guards, and the operation
 integration are implemented, mock-tested, and their execution conformance

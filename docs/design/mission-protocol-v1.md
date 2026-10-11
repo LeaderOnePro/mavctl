@@ -1,7 +1,11 @@
 # Design: mavctl mission protocol v1 (Phase 3A)
 
-Status: **implementation-grade design — no mission runtime code exists yet.**
-Tracking issue: [#25 feat(mission): add MAVLink mission upload, download, and clear](https://github.com/LeaderOnePro/mavctl/issues/25).
+Status: **implemented and released in `0.3.0`** (upload/download/clear;
+ArduPilot SITL-validated including the shared-MAVProxy relay-stability
+mitigation). This document is retained as the design record for the shipped
+protocol; follow-ups (mission execution) live in
+`docs/design/mission-execution-phase3b.md`.
+Tracking issue: [#25 feat(mission): add MAVLink mission upload, download, and clear](https://github.com/LeaderOnePro/mavctl/issues/25) (**closed** — shipped).
 Roadmap context: `docs/design/product-architecture-roadmap.md` (Phase 3A;
 mission execution is Phase 3B and is out of scope here).
 

@@ -13,24 +13,29 @@ Companion repo idea: a standalone "drone-domain Agent Harness" is a
 
 | Item | State |
 | --- | --- |
-| PyPI latest stable release | `0.3.0` |
-| main development version | none — `0.3.0` is released; the next dev version moves forward to `0.3.1.dev0` / `0.4.0.dev0` |
+| PyPI latest stable release | `0.4.0` |
+| main development version | `0.4.1.dev0` (mission help text fix + release-record sync merged via PR #38) |
 | Phase 1 (daemon + CLI + link/status/telemetry) | **done** (PR #1, tag `v0.1.0-phase1`) |
 | Phase 2 (flight control + guards + ACK safety) | **done** (tags `v0.2.0-phase2`, `v0.2.0`) |
 | Phase 2.1 (freshness metadata, `ground_state_stale`, `--version`) | **done** (PR #14) |
 | 0.2.2 daemon consistency (heartbeat single threshold, mode TOCTOU) | **done**, shipped inside `0.3.0` (PR #23; the `0.2.2.dev0` version was never released) |
 | Mission protocol (Phase 3A) | **done, released in `0.3.0`** (PR #27 core, PR #28 relay stability, PR #29 release prep, tag `v0.3.0`) |
-| Mission execution (Phase 3B) | **design merged** (`docs/design/mission-execution-phase3b.md`, issue #31), unimplemented |
+| Operation foundation (Phase 3B-0) | **done, released in `0.4.0`** (PR #35; operation registry, epoch fencing, supersession, bounded retention, `operation get`) |
+| Mission start / execution observation (Phase 3B-1) | **done, SITL-validated, released in `0.4.0`** (PR #36 + home-slot guard fix; SITL conformance recorded in `docs/SITL_ACCEPTANCE_PHASE2.md` §8i) |
+| Mission execution beyond start (pause/resume/stop/set-current, operation cancel) | **unimplemented** (Phase 3B design §C.2/E; issue #21) |
+| Vehicle health / pre-arm observation | **design merged, unimplemented** (`docs/design/vehicle-health-prearm-v1.md`, issue #4) |
 | Platform support | macOS/Linux. Windows native IPC is design-only: Issue #19 |
 | Agent Skill install | `npx skills add LeaderOnePro/mavctl -y -g` (verified against skills CLI 1.5.23; see `docs/SKILLS_CLI_ACCEPTANCE.md`) |
-| Validation scope | ArduPilot SITL (ArduCopter, `udp:127.0.0.1:14550`): link/status/telemetry, guarded arm/disarm/mode/takeoff/land/rtl, `--wait`, freshness, link-loss exit 4, mode-map unavailability, mission conformance (`upload → lossless download → clear → empty read-back`, shared MAVProxy + isolated no-MAVProxy topologies). **No real-aircraft validation** |
+| Validation scope | ArduPilot SITL (ArduCopter, `udp:127.0.0.1:14550` / isolated `tcp:127.0.0.1:5770`): link/status/telemetry, guarded arm/disarm/mode/takeoff/land/rtl, `--wait`, freshness, link-loss exit 4, mode-map unavailability, mission conformance (`upload → lossless download → clear → empty read-back`, shared MAVProxy + isolated no-MAVProxy topologies), mission-start execution conformance (guard negatives, start milestone, idempotent re-start, RTL supersession — §8i). **No real-aircraft validation** |
 
 Current command surface (complete list): `daemon start|stop|status`,
 `status`, `telemetry`, `arm`, `disarm`, `mode`, `takeoff --alt`, `land`,
-`rtl`, `mission upload|download|clear`, `--version`; every command supports
+`rtl`, `mission upload|download|clear|start`, `operation get`, `--version`;
+every command supports
 `--json`. All state-changing
 commands require `--confirm` and support `--dry-run`; only `mode`,
-`takeoff`, `land`, and `rtl` support `--wait` / `--timeout` — `arm` and
+`takeoff`, `land`, `rtl`, and `mission start` support `--wait` /
+`--timeout` — `arm` and
 `disarm` do not.
 
 Open issues and their true standing:
@@ -38,11 +43,11 @@ Open issues and their true standing:
 | Issue | Standing |
 | --- | --- |
 | #19 Windows native daemon IPC | open, **design doc merged** (`docs/design/windows-native-support.md`), unimplemented |
-| #21 emergency interruption of long `--wait` | open, design+implementation tracking (Phase 3B design §E leans operation model), deliberately not quick-fixed |
+| #21 emergency interruption of long `--wait` | open, design+implementation tracking (Phase 3B design §E leans operation model), deliberately not quick-fixed; supersession shipped in 0.4.0, cancellation surface still open |
 | #22 BATTERY_STATUS multi-battery policy | open, design issue (SYS_STATUS coverage is correct and wire-tested) |
-| #4 EKF / pre-arm health guard | open, **not started** — candidate for Phase 4 |
+| #4 EKF / pre-arm health guard | open, **design merged** (`docs/design/vehicle-health-prearm-v1.md`, PR #39), unimplemented — observe-only candidate |
 | #25 Phase 3A mission core | **closed** — implemented and released in `0.3.0` |
-| #31 Phase 3B execution design | open, **design merged** (`docs/design/mission-execution-phase3b.md`), unimplemented |
+| #31 Phase 3B execution design | open as the Phase 3B tracking issue; **Phase 3B-0/3B-1 implemented and released in `0.4.0`** — remaining scope (pause/resume/stop/set-current, operation cancel) unimplemented |
 
 ---
 
@@ -131,18 +136,20 @@ list below is kept as designed.
 
 ### Phase 3B — mission execution / observation
 
-**Status: design merged** (`docs/design/mission-execution-phase3b.md`,
-issue #31) — unimplemented.
+**Status: Phase 3B-0/3B-1 implemented and released in `0.4.0`**
+(operation foundation + `mission start`, SITL-validated — see §A; design in
+`docs/design/mission-execution-phase3b.md`, issue #31). Remaining 3B scope
+(pause/resume/stop/set-current, operation cancel) is unimplemented.
 
 - **Goal**: start/pause-resume/stop mission execution; observe progress.
-- **User-visible capabilities** (planned):
+- **User-visible capabilities** (planned; `mission start` already ships):
 
   ```bash
   mavctl mission start --confirm [--wait] [--timeout]
   ```
 
   plus mission progress fields in `status --json` (current seq, total,
-  state) and `--wait` for completion or waypoint milestones. Exact
+  state — shipped) and `--wait` for completion or waypoint milestones. Exact
   pause/resume/stop semantics belong to 3B design.
 - **Start semantics**: `mission start` does **not** implicitly switch the
   vehicle to AUTO or any other mode; it requires an explicit, verifiable
@@ -288,7 +295,8 @@ Hard interface rules (candidate but strongly intended):
 5. **Approval UX & audit log**: how human approvals are recorded; whether
    mavctl gains a local audit log of guard decisions.
 6. **Mission interruption / Issue #21**: cancellation contract vs priority
-   preemption; must be settled before or with Phase 3B.
+   preemption; supersession shipped in 0.4.0 — the cancellation surface
+   itself remains open and pairs with the remaining Phase 3B scope.
 7. **Windows IPC scheduling** (Issue #19): which phase consumes it
    (candidate Phase 5).
 8. **Multi-vehicle model**: one daemon per vehicle + namespacing vs a
