@@ -308,7 +308,7 @@ def test_pyproject_packaging_metadata_is_release_ready_shape() -> None:
     # version is promoted on a release branch before tagging. Published
     # production releases: 0.2.0, 0.2.1, 0.3.0 and 0.4.0 (see the claim
     # test above).
-    assert metadata_line(r'^version = "0\.4\.1\.dev0"$')
+    assert metadata_line(r'^version = "0\.4\.1"$')
     assert metadata_line(r'^mavctl = "[^"]+"$')
     license_text = (_ROOT / "LICENSE").read_text(encoding="utf-8")
     assert "MIT License" in license_text
@@ -318,16 +318,18 @@ def test_pyproject_packaging_metadata_is_release_ready_shape() -> None:
 # -- 0.2.1 release preparation ----------------------------------------------
 
 
-def test_development_version_is_041_dev0() -> None:
-    # The 0.4.1.dev0 development cycle (mission help text fix) is
-    # unreleased: 0.4.0 is the newest production release with a full
-    # record, no v0.4.1 tag exists, and the dev state section records the
-    # branch.
-    assert re.search(r'(?m)^version = "0\.4\.1\.dev0"$', _PYPROJECT) is not None
+def test_release_version_is_041() -> None:
+    # The release/0.4.1 branch promotes the package version to 0.4.1
+    # (Health Observe-only Runtime v1). It is still unpublished: no
+    # production release record for 0.4.1 exists and the 0.4.0 record
+    # stays the newest one.
+    assert re.search(r'(?m)^version = "0\.4\.1"$', _PYPROJECT) is not None
+    assert re.search(r'(?m)^version = "0\.4\.1\.dev0"$', _PYPROJECT) is None
     assert re.search(r'(?m)^version = "0\.4\.0"$', _PYPROJECT) is None
     assert "## Production release record: 0.4.0" in _PUBLISHING
-    assert "## Development state: 0.4.1.dev0" in _PUBLISHING
-    assert "## Release state before v0.4.0" not in _PUBLISHING
+    assert "## Production release record: 0.4.1" not in _PUBLISHING
+    assert "## Release state before v0.4.1" in _PUBLISHING
+    assert "## Development state: 0.4.1.dev0" not in _PUBLISHING
 
 
 def test_publishing_doc_records_030_production_release() -> None:
@@ -506,10 +508,13 @@ def test_readme_health_observation_is_observe_only() -> None:
     the final pre-arm authority, and no real-aircraft claim."""
     for readme in (_README, _ZH_README):
         assert "health" in readme
+        assert "0.4.1" in readme
         assert "observe-only" in readme or "observe-only" in readme
         assert "MAV_CMD_RUN_PREARM_CHECKS" in readme
         assert "tests/test_health_observation.py" in readme
         assert "tests/test_health_sitl.py" in readme
+    # the released-version marker is pinned on the English README
+    assert "Health observation (0.4.1, observe-only" in _README
     assert "never claims healthy" in _README or "从不宣称 healthy" in _ZH_README
     # the unimplemented surface stays honestly named
     assert "health guard" in _README or "pre-arm guard" in _README
@@ -541,24 +546,22 @@ def test_publishing_doc_records_022_dev_version_history() -> None:
     assert "## Production release record: 0.2.2" not in _PUBLISHING
 
 
-def test_readmes_highlight_the_040_notable_changes() -> None:
-    # The 0.4.0 highlight section: the operation foundation, mission start
-    # (SITL-validated), and the home-slot guard fix — present in both
-    # READMEs, newest release first; the 0.3.0 section stays as history.
-    en_facts = ("Notable in 0.4.0:", "Operation foundation (Phase 3B-0)",
-                "Mission start (Phase 3B-1)", "operation_superseded",
-                "operation_wait_timeout", "mavctl operation get <id>",
-                "requires wire count >= 2")
-    zh_facts = ("0.4.0 主要变化", "Operation foundation",
-                "Mission start", "operation_superseded",
-                "operation_wait_timeout", "mavctl operation get <id>",
-                "wire count >= 2")
+def test_readmes_highlight_the_041_notable_changes() -> None:
+    # The 0.4.1 highlight section: the observe-only health observation
+    # runtime — present in both READMEs, newest release first; the 0.4.0
+    # section stays as history.
+    en_facts = ("Notable in 0.4.1:", "Health observation runtime v1",
+                "observe-only", "MAV_CMD_RUN_PREARM_CHECKS",
+                "remain the final authority")
+    zh_facts = ("0.4.1 主要变化", "Health observation runtime v1",
+                "observe-only", "MAV_CMD_RUN_PREARM_CHECKS",
+                "最终权威")
     for readme, facts in ((_README, en_facts), (_ZH_README, zh_facts)):
         for fact in facts:
             assert fact in readme, fact
-        # newest release first: the 0.4.0 section precedes the 0.3.0 one
+        # newest release first: the 0.4.1 section precedes the 0.4.0 one
         assert readme.index(facts[0]) < readme.index(
-            "Notable in 0.3.0:" if readme is _README else "0.3.0 主要变化")
+            "Notable in 0.4.0:" if readme is _README else "0.4.0 主要变化")
 
 
 def test_readmes_highlight_the_021_notable_changes() -> None:

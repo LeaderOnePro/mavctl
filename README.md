@@ -103,7 +103,7 @@ ArduCopter instance (automated in `tests/test_mission_execution_sitl.py`:
 guard negative paths, the start milestone, idempotent re-start, RTL
 supersession); no real-aircraft claim.
 
-**Health observation (0.4.1.dev0, observe-only; ArduCopter SITL-validated)**:
+**Health observation (0.4.1, observe-only; ArduCopter SITL-validated)**:
 `status --json` carries a `health` block with raw vehicle-reported
 observations — the estimator (`EKF_STATUS_REPORT`: raw flag mask, dialect
 flag names, variance floats, independent monotonic age), raw `SYS_STATUS`
@@ -129,6 +129,18 @@ Log download / analysis
 Firmware flashing
 Multi-vehicle orchestration
 ```
+
+Notable in 0.4.1:
+
+- Health observation runtime v1 (observe-only): `status --json` gains a
+  `health` block — raw `EKF_STATUS_REPORT` observation (flag mask,
+  dialect-known flag names, variance fields, independent monotonic age),
+  raw `SYS_STATUS` sensor present/enabled/health bitmasks, and the most
+  recent locked-autopilot `PreArm:`/`Arm:`/`PreArm_EKF:` STATUSTEXT
+  diagnostic with its own freshness age. Strictly observe-only: no health
+  CLI command, no health advisory or hard guard,
+  `MAV_CMD_RUN_PREARM_CHECKS` is never sent, `unknown`/stale is never
+  healthy, and ArduPilot's pre-arm checks remain the final authority.
 
 Notable in 0.4.0:
 

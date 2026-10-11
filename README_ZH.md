@@ -96,7 +96,7 @@ ArduPilot checkout（revision `4c98c9221a`；唯一经审阅的源码修改是
 `AP_FWVersion.h` 中的 macOS host-build/linker workaround，不影响
 mission/GCS 运行时代码）。
 
-**Health observation（0.4.1.dev0，observe-only；ArduCopter SITL 验证）**：
+**Health observation（0.4.1，observe-only；ArduCopter SITL 验证）**：
 `status --json` 携带 `health` 块，承载载具上报的原始观测——estimator
 （`EKF_STATUS_REPORT`：原始 flag 掩码、方言 flag 名称、方差浮点、独立的
 单调时钟 age）、`SYS_STATUS` 的 sensors present/enabled/health 原始
@@ -120,6 +120,17 @@ operation cancel
 固件刷写
 多载具协同
 ```
+
+0.4.1 主要变化：
+
+- Health observation runtime v1（严格 observe-only）：`status --json`
+  新增 `health` 块——`EKF_STATUS_REPORT` 原始观测（flag 掩码、方言
+  flag 名称、方差字段、独立单调时钟 age）、`SYS_STATUS` 的 sensors
+  present/enabled/health 原始 bitmask、最近一条 locked autopilot 的
+  `PreArm:`/`Arm:`/`PreArm_EKF:` STATUSTEXT 诊断（独立 freshness age）。
+  无 health CLI、无 health advisory/hard guard、绝不发送
+  `MAV_CMD_RUN_PREARM_CHECKS`；`unknown`/过期不等于 healthy；
+  ArduPilot 自身 pre-arm 检查仍是最终权威。
 
 0.4.0 主要变化：
 
